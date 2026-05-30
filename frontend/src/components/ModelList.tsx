@@ -1,24 +1,37 @@
 import { CheckCircle2, Cpu, Download, ExternalLink, RefreshCw, Wifi, WifiOff } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { CatalogModel, GatewayAPIError, ModelInfo, gatewayErrorMessage } from '../api/client';
+import { CatalogCategory, CatalogModel, GatewayAPIError, ModelInfo, gatewayErrorMessage } from '../api/client';
 import { useGatewayStore } from '../store/useGatewayStore';
 
 export default function ModelList(): JSX.Element {
   const models = useGatewayStore((state) => state.models);
   const catalog = useGatewayStore((state) => state.modelCatalog);
   const catalogOnline = useGatewayStore((state) => state.catalogOnline);
+  const catalogCategory = useGatewayStore((state) => state.catalogCategory);
+  const catalogTotal = useGatewayStore((state) => state.catalogTotal);
   const loadModels = useGatewayStore((state) => state.loadModels);
   const loadModelCatalog = useGatewayStore((state) => state.loadModelCatalog);
   const pullCatalogModel = useGatewayStore((state) => state.pullCatalogModel);
   const [pulling, setPulling] = useState('');
+  const [loadingMore, setLoadingMore] = useState(false);
+  const catalogCategoryRef = useRef(catalogCategory);
+  const catalogCountRef = useRef(catalog.length);
+
+  useEffect(() => {
+    catalogCategoryRef.current = catalogCategory;
+  }, [catalogCategory]);
+
+  useEffect(() => {
+    catalogCountRef.current = catalog.length;
+  }, [catalog.length]);
 
   useEffect(() => {
     void loadModels();
-    void loadModelCatalog();
+    void loadModelCatalog(catalogCategoryRef.current);
     const id = window.setInterval(() => {
       void loadModels();
-      void loadModelCatalog();
+      void loadModelCatalog(catalogCategoryRef.current, false, Math.max(12, catalogCountRef.current));
     }, 5000);
     return () => window.clearInterval(id);
   }, [loadModelCatalog, loadModels]);
@@ -26,7 +39,20 @@ export default function ModelList(): JSX.Element {
   const registered = useMemo(() => new Set(models.map((model) => model.id)), [models]);
 
   const refresh = async () => {
-    await Promise.all([loadModels(), loadModelCatalog()]);
+    await Promise.all([loadModels(), loadModelCatalog(catalogCategory, false, Math.max(12, catalog.length))]);
+  };
+
+  const selectCategory = async (category: CatalogCategory) => {
+    await loadModelCatalog(category);
+  };
+
+  const loadMore = async () => {
+    setLoadingMore(true);
+    try {
+      await loadModelCatalog(catalogCategory, true);
+    } finally {
+      setLoadingMore(false);
+    }
   };
 
   const startDownload = async (model: CatalogModel) => {
@@ -100,10 +126,19 @@ export default function ModelList(): JSX.Element {
               <span>{catalogOnline ? 'Ollama library reachable' : 'Waiting for internet access to Ollama library'}</span>
             </div>
           </div>
-          <button className="command-button" type="button" onClick={() => void loadModelCatalog()}>
+          <button className="command-button" type="button" onClick={() => void refresh()}>
             <RefreshCw className="h-4 w-4" />
             Refresh
           </button>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="inline-flex rounded-panel border border-border bg-base p-1">
+            <CatalogTab active={catalogCategory === 'standard'} label="Recommended" countLabel="consumer GPUs" onClick={() => void selectCategory('standard')} />
+            <CatalogTab active={catalogCategory === 'abliterated'} label="Abliterated" countLabel="separate list" onClick={() => void selectCategory('abliterated')} />
+          </div>
+          <div className="font-mono text-xs text-muted">
+            Showing {catalog.length} of {catalogTotal}
+          </div>
         </div>
         <div className="grid gap-3 p-4 lg:grid-cols-2">
           {catalog.map((model) => (
@@ -122,8 +157,39 @@ export default function ModelList(): JSX.Element {
             </div>
           )}
         </div>
+        {catalog.length < catalogTotal && (
+          <div className="border-t border-border p-4 text-center">
+            <button className="command-button mx-auto" type="button" disabled={loadingMore} onClick={() => void loadMore()}>
+              <Download className="h-4 w-4" />
+              {loadingMore ? 'Loading' : 'Load More'}
+            </button>
+          </div>
+        )}
       </section>
     </div>
+  );
+}
+
+function CatalogTab({
+  active,
+  label,
+  countLabel,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  countLabel: string;
+  onClick: () => void;
+}): JSX.Element {
+  return (
+    <button
+      className={`rounded-panel px-3 py-2 text-left transition ${active ? 'bg-elevated text-primary' : 'text-muted hover:text-primary'}`}
+      type="button"
+      onClick={onClick}
+    >
+      <span className="block text-xs font-semibold">{label}</span>
+      <span className="block text-[10px] uppercase">{countLabel}</span>
+    </button>
   );
 }
 

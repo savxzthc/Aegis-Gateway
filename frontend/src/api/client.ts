@@ -33,6 +33,7 @@ export interface CatalogModel {
   size_gb: number;
   description: string;
   use_case: string;
+  category: CatalogCategory;
   library_url: string;
   installed: boolean;
   registered: boolean;
@@ -41,9 +42,15 @@ export interface CatalogModel {
   message: string;
 }
 
+export type CatalogCategory = 'standard' | 'abliterated';
+
 export interface ModelCatalogResponse {
   online: boolean;
   data: CatalogModel[];
+  total: number;
+  limit: number;
+  offset: number;
+  category: CatalogCategory;
 }
 
 export interface PullJob {
@@ -317,8 +324,11 @@ export async function getModels(): Promise<ModelInfo[]> {
   return res.data.data;
 }
 
-export async function getModelCatalog(): Promise<ModelCatalogResponse> {
-  const res = await client.get<ModelCatalogResponse>('/models/catalog', { timeout: 10000 });
+export async function getModelCatalog(category: CatalogCategory, limit: number, offset: number): Promise<ModelCatalogResponse> {
+  const res = await client.get<ModelCatalogResponse>('/models/catalog', {
+    params: { category, limit, offset },
+    timeout: 10000,
+  });
   return res.data;
 }
 

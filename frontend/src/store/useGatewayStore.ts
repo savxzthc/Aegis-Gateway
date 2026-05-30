@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import {
   APIKey,
+  CatalogCategory,
   CatalogModel,
   ConfigPatch,
   ConfigResponse,
@@ -37,6 +38,10 @@ interface GatewayState {
   models: ModelInfo[];
   catalogOnline: boolean;
   modelCatalog: CatalogModel[];
+  catalogCategory: CatalogCategory;
+  catalogTotal: number;
+  catalogLimit: number;
+  catalogOffset: number;
   stats: StatsResponse | null;
   logs: RequestLog[];
   logLimit: number;
@@ -49,7 +54,7 @@ interface GatewayState {
   clearCreatedKey: () => void;
   loadHardware: () => Promise<void>;
   loadModels: () => Promise<void>;
-  loadModelCatalog: () => Promise<void>;
+  loadModelCatalog: (category?: CatalogCategory, append?: boolean, limit?: number) => Promise<void>;
   pullCatalogModel: (model: string) => Promise<void>;
   loadStats: () => Promise<void>;
   loadLogs: (offset?: number) => Promise<void>;
@@ -68,6 +73,10 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   models: [],
   catalogOnline: false,
   modelCatalog: [],
+  catalogCategory: 'standard',
+  catalogTotal: 0,
+  catalogLimit: 12,
+  catalogOffset: 0,
   stats: null,
   logs: [],
   logLimit: 50,
@@ -98,18 +107,37 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
       set({ models, connected: true });
     });
   },
-  loadModelCatalog: async () => {
+  loadModelCatalog: async (category, append = false, limit) => {
     await guard(set, async () => {
-      const catalog = await getModelCatalog();
-      set({ modelCatalog: catalog.data, catalogOnline: catalog.online, connected: true });
+      const selectedCategory = category ?? get().catalogCategory;
+      const offset = append ? get().modelCatalog.length : 0;
+      const selectedLimit = limit ?? get().catalogLimit;
+      const catalog = await getModelCatalog(selectedCategory, selectedLimit, offset);
+      set({
+        modelCatalog: append ? [...get().modelCatalog, ...catalog.data] : catalog.data,
+        catalogOnline: catalog.online,
+        catalogCategory: catalog.category,
+        catalogTotal: catalog.total,
+        catalogLimit: catalog.limit,
+        catalogOffset: catalog.offset,
+        connected: true,
+      });
     });
   },
   pullCatalogModel: async (model) => {
     try {
       await pullModel(model);
-      const catalog = await getModelCatalog();
+      const catalog = await getModelCatalog(get().catalogCategory, Math.max(get().catalogLimit, get().modelCatalog.length), 0);
       const models = await getModels();
-      set({ modelCatalog: catalog.data, catalogOnline: catalog.online, models, connected: true });
+      set({
+        modelCatalog: catalog.data,
+        catalogOnline: catalog.online,
+        catalogTotal: catalog.total,
+        catalogLimit: catalog.limit,
+        catalogOffset: catalog.offset,
+        models,
+        connected: true,
+      });
     } catch (error) {
       if (error instanceof GatewayAPIError && error.status === 401) {
         window.localStorage.removeItem('aegis_api_key');
