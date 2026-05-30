@@ -150,6 +150,7 @@ export interface ModelRegistryEntry {
   vram_gb: number;
   backend: 'ollama' | 'llamacpp';
   description: string;
+  system_prompt: string;
 }
 
 export interface GatewayConfig {
@@ -158,6 +159,7 @@ export interface GatewayConfig {
     port: number;
     idle_timeout_minutes: number;
     request_timeout_seconds: number;
+    system_prompt: string;
   };
   security: {
     rate_limit_rpm: number;

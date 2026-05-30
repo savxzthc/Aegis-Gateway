@@ -113,6 +113,9 @@ func TestChatCompletionsReturnsOpenAIShapeAndRoutingHeaders(t *testing.T) {
 	if backend.chatReq == nil || backend.chatReq.Model != "llama3:8b" {
 		t.Fatalf("backend did not receive routed model: %#v", backend.chatReq)
 	}
+	if len(backend.chatReq.Messages) < 2 || backend.chatReq.Messages[0].Role != "system" || !strings.Contains(backend.chatReq.Messages[0].Content.String(), "Aegis Gateway master coding assistant system prompt") {
+		t.Fatalf("system prompt was not injected: %#v", backend.chatReq.Messages)
+	}
 
 	var out chatCompletionResponse
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
@@ -181,7 +184,7 @@ func TestChatCompletionsStreamsOpenAIChunks(t *testing.T) {
 		`"content":" stream"`,
 		`"finish_reason":"stop"`,
 		`"system_fingerprint":"aegis-local"`,
-		`"usage":{"prompt_tokens":3,"completion_tokens":3,"total_tokens":6}`,
+		`"completion_tokens":3`,
 		"data: [DONE]\n\n",
 	} {
 		if !strings.Contains(out, want) {

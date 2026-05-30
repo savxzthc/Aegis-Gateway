@@ -28,6 +28,7 @@ type ServerConfig struct {
 	Port                  int    `toml:"port" json:"port"`
 	IdleTimeoutMinutes    int    `toml:"idle_timeout_minutes" json:"idle_timeout_minutes"`
 	RequestTimeoutSeconds int    `toml:"request_timeout_seconds" json:"request_timeout_seconds"`
+	SystemPrompt          string `toml:"system_prompt" json:"system_prompt"`
 }
 
 // SecurityConfig contains local authentication and rate-limit settings.
@@ -50,9 +51,10 @@ type ModelsConfig struct {
 
 // ModelConfig describes a known model.
 type ModelConfig struct {
-	VRAMGB      float64 `toml:"vram_gb" json:"vram_gb"`
-	Backend     string  `toml:"backend" json:"backend"`
-	Description string  `toml:"description" json:"description"`
+	VRAMGB       float64 `toml:"vram_gb" json:"vram_gb"`
+	Backend      string  `toml:"backend" json:"backend"`
+	Description  string  `toml:"description" json:"description"`
+	SystemPrompt string  `toml:"system_prompt" json:"system_prompt"`
 }
 
 // Manager provides concurrency-safe access to runtime configuration.
@@ -79,6 +81,7 @@ func Defaults() Config {
 			Port:                  9000,
 			IdleTimeoutMinutes:    10,
 			RequestTimeoutSeconds: 300,
+			SystemPrompt:          DefaultSystemPrompt(),
 		},
 		Security: SecurityConfig{
 			RateLimitRPM:    60,
@@ -92,19 +95,22 @@ func Defaults() Config {
 		Models: ModelsConfig{
 			Registry: map[string]ModelConfig{
 				"llama3:8b": {
-					VRAMGB:      5.5,
-					Backend:     "ollama",
-					Description: "Meta Llama 3 8B - fast, general purpose",
+					VRAMGB:       5.5,
+					Backend:      "ollama",
+					Description:  "Meta Llama 3 8B - fast, general purpose",
+					SystemPrompt: "Llama 3 8B addendum: prioritize balanced general-purpose assistance. Be conversational but concise, ask clarifying questions when requirements are ambiguous, and favor robust step-by-step reasoning for architecture and debugging tasks.",
 				},
 				"deepseek-coder:6.7b": {
-					VRAMGB:      4.2,
-					Backend:     "ollama",
-					Description: "DeepSeek Coder 6.7B - optimized for code generation",
+					VRAMGB:       4.2,
+					Backend:      "ollama",
+					Description:  "DeepSeek Coder 6.7B - optimized for code generation",
+					SystemPrompt: "DeepSeek Coder 6.7B addendum: lean into implementation detail, code review precision, static reasoning, test design, and edge-case analysis. Prefer concrete diffs, typed APIs, small abstractions, and compiler-verifiable suggestions.",
 				},
 				"phi3:mini": {
-					VRAMGB:      2.3,
-					Backend:     "ollama",
-					Description: "Phi-3 Mini - lightweight fallback for low VRAM",
+					VRAMGB:       2.3,
+					Backend:      "ollama",
+					Description:  "Phi-3 Mini - lightweight fallback for low VRAM",
+					SystemPrompt: "Phi-3 Mini addendum: optimize for short, high-signal answers. State assumptions clearly, avoid long speculative chains, and prefer small actionable steps that fit limited context and compute budgets.",
 				},
 			},
 		},
@@ -376,7 +382,9 @@ func commentedTOML(cfg Config) string {
 	fmt.Fprintln(&b, "# Minutes of inactivity before a loaded model is unloaded from VRAM.")
 	fmt.Fprintf(&b, "idle_timeout_minutes = %d\n", cfg.Server.IdleTimeoutMinutes)
 	fmt.Fprintln(&b, "# Maximum seconds a model request may run before Aegis cancels it.")
-	fmt.Fprintf(&b, "request_timeout_seconds = %d\n\n", cfg.Server.RequestTimeoutSeconds)
+	fmt.Fprintf(&b, "request_timeout_seconds = %d\n", cfg.Server.RequestTimeoutSeconds)
+	fmt.Fprintln(&b, "# Default coding assistant system prompt injected when a request does not already provide one.")
+	fmt.Fprintf(&b, "system_prompt = %s\n\n", tomlMultilineString(cfg.Server.SystemPrompt))
 
 	fmt.Fprintln(&b, "[security]")
 	fmt.Fprintln(&b, "# Maximum requests per minute per API key. 0 = unlimited.")
@@ -403,6 +411,15 @@ func commentedTOML(cfg Config) string {
 		fmt.Fprintf(&b, "  vram_gb = %.1f\n", model.VRAMGB)
 		fmt.Fprintf(&b, "  backend = %s\n", strconv.Quote(model.Backend))
 		fmt.Fprintf(&b, "  description = %s\n", strconv.Quote(model.Description))
+		fmt.Fprintf(&b, "  system_prompt = %s\n", tomlMultilineString(model.SystemPrompt))
 	}
 	return b.String()
+}
+
+func tomlMultilineString(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return strconv.Quote("")
+	}
+	escaped := strings.ReplaceAll(value, `"""`, `\"\"\"`)
+	return `"""` + "\n" + escaped + "\n" + `"""`
 }

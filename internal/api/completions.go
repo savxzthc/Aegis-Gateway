@@ -71,9 +71,22 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err.Error(), routeErrorCode(err))
 		return
 	}
+	if selected != req.Model {
+		if ok, err := s.DB.KeyAllowsModel(r.Context(), keyID, selected); err != nil {
+			status = http.StatusInternalServerError
+			writePrivateError(w, r, status, "model ACL check failed", "MODEL_ACL_CHECK_FAILED", err)
+			return
+		} else if !ok {
+			status = http.StatusForbidden
+			writeError(w, status, "API key is not allowed to use the routed fallback model", "MODEL_NOT_ALLOWED")
+			return
+		}
+	}
 	used = selected
 	fallback = didFallback
 	req.Model = selected
+	req.Messages = s.withConfiguredSystemPrompt(req.Messages, selected)
+	promptTokens = estimateMessages(req.Messages)
 	w.Header().Set("X-Aegis-Routed-Model", selected)
 	w.Header().Set("X-Aegis-Fallback", fmt.Sprintf("%t", didFallback))
 
@@ -168,6 +181,17 @@ func (s *Server) Completions(w http.ResponseWriter, r *http.Request) {
 		status = routeErrorStatus(err)
 		writeError(w, status, err.Error(), routeErrorCode(err))
 		return
+	}
+	if selected != req.Model {
+		if ok, err := s.DB.KeyAllowsModel(r.Context(), keyID, selected); err != nil {
+			status = http.StatusInternalServerError
+			writePrivateError(w, r, status, "model ACL check failed", "MODEL_ACL_CHECK_FAILED", err)
+			return
+		} else if !ok {
+			status = http.StatusForbidden
+			writeError(w, status, "API key is not allowed to use the routed fallback model", "MODEL_NOT_ALLOWED")
+			return
+		}
 	}
 	used = selected
 	fallback = didFallback
@@ -465,6 +489,37 @@ func estimateMessages(messages []backends.ChatMessage) int {
 		total += estimateText(msg.Role) + estimateText(msg.Content.String())
 	}
 	return total
+}
+
+func (s *Server) withConfiguredSystemPrompt(messages []backends.ChatMessage, model string) []backends.ChatMessage {
+	if hasSystemOrDeveloperMessage(messages) {
+		return messages
+	}
+	cfg := s.Config.Get()
+	systemPrompt := strings.TrimSpace(cfg.Server.SystemPrompt)
+	if modelCfg, ok := cfg.Models.Registry[model]; ok && strings.TrimSpace(modelCfg.SystemPrompt) != "" {
+		if systemPrompt == "" {
+			systemPrompt = strings.TrimSpace(modelCfg.SystemPrompt)
+		} else {
+			systemPrompt = systemPrompt + "\n\nModel-specific addendum:\n" + strings.TrimSpace(modelCfg.SystemPrompt)
+		}
+	}
+	if systemPrompt == "" {
+		return messages
+	}
+	next := make([]backends.ChatMessage, 0, len(messages)+1)
+	next = append(next, backends.ChatMessage{Role: "system", Content: backends.NewMessageContent(systemPrompt)})
+	next = append(next, messages...)
+	return next
+}
+
+func hasSystemOrDeveloperMessage(messages []backends.ChatMessage) bool {
+	for _, message := range messages {
+		if message.Role == "system" || message.Role == "developer" {
+			return true
+		}
+	}
+	return false
 }
 
 func validateChatRequest(req *backends.ChatRequest) error {
