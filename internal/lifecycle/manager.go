@@ -38,6 +38,7 @@ type modelState struct {
 	state State
 	timer *time.Timer
 	err   error
+	ready chan struct{}
 }
 
 type commandRunner func(ctx context.Context, name string, args ...string) error
@@ -96,19 +97,33 @@ func (m *Manager) EnsureLoaded(ctx context.Context, model string) error {
 			m.mu.Unlock()
 			return nil
 		case StateLoading:
+			if entry.ready == nil {
+				entry.ready = make(chan struct{})
+			}
+			ready := entry.ready
 			m.mu.Unlock()
 			if time.Now().After(deadline) {
 				return fmt.Errorf("timeout waiting for %s to load", model)
 			}
+			wait := time.Until(deadline)
+			if wait <= 0 {
+				return fmt.Errorf("timeout waiting for %s to load", model)
+			}
+			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return ctx.Err()
-			case <-time.After(500 * time.Millisecond):
+			case <-ready:
+				timer.Stop()
 				continue
+			case <-timer.C:
+				return fmt.Errorf("timeout waiting for %s to load", model)
 			}
 		default:
 			entry.state = StateLoading
 			entry.err = nil
+			entry.ready = make(chan struct{})
 			m.mu.Unlock()
 			err := m.load(ctx, model)
 			m.mu.Lock()
@@ -116,11 +131,13 @@ func (m *Manager) EnsureLoaded(ctx context.Context, model string) error {
 			if err != nil {
 				entry.state = StateUnloaded
 				entry.err = err
+				m.notifyReadyLocked(entry)
 				m.mu.Unlock()
 				return err
 			}
 			entry.state = StateLoaded
 			entry.err = nil
+			m.notifyReadyLocked(entry)
 			m.mu.Unlock()
 			return nil
 		}
@@ -155,6 +172,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 			models = append(models, model)
 		}
 		entry.state = StateUnloaded
+		m.notifyReadyLocked(entry)
 	}
 	m.mu.Unlock()
 
@@ -412,12 +430,24 @@ func (m *Manager) unload(model string) {
 	entry := m.entryLocked(model)
 	entry.state = StateUnloaded
 	entry.timer = nil
+	m.notifyReadyLocked(entry)
 	m.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), m.unloadTimeout)
 	defer cancel()
 	if err := m.unloadWithContext(ctx, model); err != nil {
 		log.Printf("aegis: failed to unload %s: %v", model, err)
+	}
+}
+
+func (m *Manager) notifyReadyLocked(entry *modelState) {
+	if entry.ready == nil {
+		return
+	}
+	select {
+	case <-entry.ready:
+	default:
+		close(entry.ready)
 	}
 }
 

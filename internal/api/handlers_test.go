@@ -39,12 +39,12 @@ func (f *fakeBackend) Chat(ctx context.Context, req *backends.ChatRequest, strea
 	}, nil
 }
 
-func (f *fakeBackend) StreamChat(ctx context.Context, req *backends.ChatRequest, ch chan<- string) error {
+func (f *fakeBackend) StreamChat(ctx context.Context, req *backends.ChatRequest, ch chan<- backends.StreamChunk) error {
 	if f.streamErr != nil {
 		return f.streamErr
 	}
-	ch <- "hello"
-	ch <- " stream"
+	ch <- backends.StreamChunk{Content: "hello"}
+	ch <- backends.StreamChunk{Content: " stream", FinishReason: "stop", Usage: backends.Usage{CompletionTokens: 3, TotalTokens: 3}}
 	return nil
 }
 

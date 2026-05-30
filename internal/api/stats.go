@@ -37,12 +37,7 @@ func (s *Server) Logs(w http.ResponseWriter, r *http.Request) {
 	if limit > 200 {
 		limit = 200
 	}
-	logs, err := s.DB.ListRequestLogs(r.Context(), limit, offset)
-	if err != nil {
-		writePrivateError(w, r, http.StatusInternalServerError, "log query failed", "LOG_QUERY_FAILED", err)
-		return
-	}
-	total, err := s.DB.CountRequestLogs(r.Context())
+	logs, total, err := s.DB.ListRequestLogs(r.Context(), limit, offset)
 	if err != nil {
 		writePrivateError(w, r, http.StatusInternalServerError, "log query failed", "LOG_QUERY_FAILED", err)
 		return

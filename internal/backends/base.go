@@ -11,7 +11,7 @@ import (
 // Backend defines the minimal local model runner interface.
 type Backend interface {
 	Chat(ctx context.Context, req *ChatRequest, stream bool) (*ChatResponse, error)
-	StreamChat(ctx context.Context, req *ChatRequest, ch chan<- string) error
+	StreamChat(ctx context.Context, req *ChatRequest, ch chan<- StreamChunk) error
 	Ping(ctx context.Context) error
 }
 
@@ -120,9 +120,17 @@ type Usage struct {
 
 // ChatResponse contains normalized backend output.
 type ChatResponse struct {
-	Model   string `json:"model"`
-	Content string `json:"content"`
-	Usage   Usage  `json:"usage"`
+	Model        string `json:"model"`
+	Content      string `json:"content"`
+	Usage        Usage  `json:"usage"`
+	FinishReason string `json:"finish_reason"`
+}
+
+// StreamChunk contains one normalized backend stream event.
+type StreamChunk struct {
+	Content      string
+	FinishReason string
+	Usage        Usage
 }
 
 // CompletionPrompt stores normalized text from OpenAI legacy prompt input.

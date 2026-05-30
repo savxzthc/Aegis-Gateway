@@ -101,7 +101,7 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if completionTokens == 0 {
 		completionTokens = estimateText(resp.Content)
 	}
-	writeJSON(w, status, newChatCompletionResponse(selected, resp.Content, promptTokens, completionTokens, completionFinishReason(req.MaxTokens, completionTokens)))
+	writeJSON(w, status, newChatCompletionResponse(selected, resp.Content, promptTokens, completionTokens, completionFinishReason(resp.FinishReason, req.MaxTokens, completionTokens)))
 }
 
 // Completions handles POST /v1/completions.
@@ -200,7 +200,7 @@ func (s *Server) Completions(w http.ResponseWriter, r *http.Request) {
 	if completionTokens == 0 {
 		completionTokens = estimateText(resp.Content)
 	}
-	writeJSON(w, status, newCompletionResponse(selected, resp.Content, promptTokens, completionTokens, completionFinishReason(req.MaxTokens, completionTokens)))
+	writeJSON(w, status, newCompletionResponse(selected, resp.Content, promptTokens, completionTokens, completionFinishReason(resp.FinishReason, req.MaxTokens, completionTokens)))
 }
 
 type streamResult struct {
@@ -215,7 +215,7 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend back
 		return streamResult{Status: http.StatusInternalServerError}
 	}
 	prepareSSE(w)
-	ch := make(chan string)
+	ch := make(chan backends.StreamChunk)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- backend.StreamChat(r.Context(), req, ch)
@@ -235,8 +235,20 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend back
 			Delta: chatDelta{Role: "assistant"},
 		}},
 	})
-	for token := range ch {
-		completionTokens += estimateText(token)
+	finishReason := ""
+	for chunk := range ch {
+		if chunk.Usage.CompletionTokens > 0 {
+			completionTokens = chunk.Usage.CompletionTokens
+		}
+		if chunk.FinishReason != "" {
+			finishReason = chunk.FinishReason
+		}
+		if chunk.Content == "" {
+			continue
+		}
+		if completionTokens == 0 || chunk.Usage.CompletionTokens == 0 {
+			completionTokens += estimateText(chunk.Content)
+		}
 		writeSSE(w, flusher, chatCompletionChunk{
 			ID:      id,
 			Object:  "chat.completion.chunk",
@@ -244,7 +256,7 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend back
 			Model:   model,
 			Choices: []chatStreamChoice{{
 				Index: 0,
-				Delta: chatDelta{Content: token},
+				Delta: chatDelta{Content: chunk.Content},
 			}},
 		})
 	}
@@ -256,7 +268,7 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend back
 	if isContextDone(r.Context()) {
 		return streamResult{Tokens: completionTokens, Status: 499}
 	}
-	finish := completionFinishReason(req.MaxTokens, completionTokens)
+	finish := completionFinishReason(finishReason, req.MaxTokens, completionTokens)
 	writeSSE(w, flusher, chatCompletionChunk{
 		ID:      id,
 		Object:  "chat.completion.chunk",
@@ -276,7 +288,7 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, backen
 		return streamResult{Status: http.StatusInternalServerError}
 	}
 	prepareSSE(w)
-	ch := make(chan string)
+	ch := make(chan backends.StreamChunk)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- backend.StreamChat(r.Context(), req, ch)
@@ -286,14 +298,26 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, backen
 	completionTokens := 0
 	id := responseID("cmpl")
 	created := time.Now().Unix()
-	for token := range ch {
-		completionTokens += estimateText(token)
+	finishReason := ""
+	for chunk := range ch {
+		if chunk.Usage.CompletionTokens > 0 {
+			completionTokens = chunk.Usage.CompletionTokens
+		}
+		if chunk.FinishReason != "" {
+			finishReason = chunk.FinishReason
+		}
+		if chunk.Content == "" {
+			continue
+		}
+		if completionTokens == 0 || chunk.Usage.CompletionTokens == 0 {
+			completionTokens += estimateText(chunk.Content)
+		}
 		writeSSE(w, flusher, completionChunk{
 			ID:      id,
 			Object:  "text_completion",
 			Created: created,
 			Model:   model,
-			Choices: []completionChoice{{Text: token, Index: 0}},
+			Choices: []completionChoice{{Text: chunk.Content, Index: 0}},
 		})
 	}
 	if err := <-errCh; err != nil && !isContextDone(r.Context()) {
@@ -304,7 +328,7 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, backen
 	if isContextDone(r.Context()) {
 		return streamResult{Tokens: completionTokens, Status: 499}
 	}
-	finish := completionFinishReason(req.MaxTokens, completionTokens)
+	finish := completionFinishReason(finishReason, req.MaxTokens, completionTokens)
 	writeSSE(w, flusher, completionChunk{
 		ID:      id,
 		Object:  "text_completion",
@@ -414,7 +438,10 @@ func validateChatRequest(req *backends.ChatRequest) error {
 	return validateSampling(req.N, req.MaxTokens, req.Temperature, req.TopP, req.PresencePenalty, req.FrequencyPenalty)
 }
 
-func validateSampling(_ *int, maxTokens *int, temperature, topP, presencePenalty, frequencyPenalty *float64) error {
+func validateSampling(n *int, maxTokens *int, temperature, topP, presencePenalty, frequencyPenalty *float64) error {
+	if n != nil && *n != 1 {
+		return fmt.Errorf("n values other than 1 are not supported")
+	}
 	if maxTokens != nil && *maxTokens <= 0 {
 		return fmt.Errorf("max_tokens must be greater than zero")
 	}
@@ -511,7 +538,15 @@ type completionChoice struct {
 	FinishReason *string `json:"finish_reason,omitempty"`
 }
 
-func completionFinishReason(maxTokens *int, completionTokens int) string {
+func completionFinishReason(backendReason string, maxTokens *int, completionTokens int) string {
+	switch strings.ToLower(strings.TrimSpace(backendReason)) {
+	case "length":
+		return "length"
+	case "stop", "stopped", "end_turn", "eos", "unload", "unloaded":
+		return "stop"
+	case "tool_calls", "content_filter":
+		return strings.ToLower(strings.TrimSpace(backendReason))
+	}
 	if maxTokens != nil && completionTokens >= *maxTokens {
 		return "length"
 	}

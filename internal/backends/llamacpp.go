@@ -77,14 +77,16 @@ func (b *LlamaCppBackend) Chat(ctx context.Context, req *ChatRequest, stream boo
 		return nil, err
 	}
 	content := ""
+	finishReason := ""
 	if len(out.Choices) > 0 {
 		content = out.Choices[0].Message.Content
+		finishReason = out.Choices[0].FinishReason
 	}
-	return &ChatResponse{Model: req.Model, Content: content, Usage: out.Usage}, nil
+	return &ChatResponse{Model: req.Model, Content: content, Usage: out.Usage, FinishReason: finishReason}, nil
 }
 
 // StreamChat streams token text from llama.cpp into ch.
-func (b *LlamaCppBackend) StreamChat(ctx context.Context, req *ChatRequest, ch chan<- string) error {
+func (b *LlamaCppBackend) StreamChat(ctx context.Context, req *ChatRequest, ch chan<- StreamChunk) error {
 	body := llamaChatRequest{
 		Model:       req.Model,
 		Messages:    wireMessages(req.Messages),
@@ -133,13 +135,21 @@ func (b *LlamaCppBackend) StreamChat(ctx context.Context, req *ChatRequest, ch c
 		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
 			return err
 		}
-		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta.Content == "" {
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		event := StreamChunk{
+			Content:      chunk.Choices[0].Delta.Content,
+			FinishReason: chunk.Choices[0].FinishReason,
+			Usage:        chunk.Usage,
+		}
+		if event.Content == "" && event.FinishReason == "" && event.Usage.TotalTokens == 0 {
 			continue
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case ch <- chunk.Choices[0].Delta.Content:
+		case ch <- event:
 		}
 	}
 	return scanner.Err()
@@ -158,7 +168,8 @@ type llamaChatRequest struct {
 
 type llamaChatResponse struct {
 	Choices []struct {
-		Message wireChatMessage `json:"message"`
+		Message      wireChatMessage `json:"message"`
+		FinishReason string          `json:"finish_reason"`
 	} `json:"choices"`
 	Usage Usage `json:"usage"`
 }
@@ -168,5 +179,7 @@ type llamaStreamResponse struct {
 		Delta struct {
 			Content string `json:"content"`
 		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage Usage `json:"usage"`
 }

@@ -11,6 +11,7 @@
 - Added single pull-job status endpoint at `/v1/models/pull/{model}`.
 - Added clearer startup backend output and LAN binding warnings.
 - Added token-cache eviction, request log totals, explicit frontend API timeouts, and llama.cpp backend refresh on config updates.
+- Hardened release metadata, completion finish reasons, log pagination, lifecycle load waiting, and unsupported multi-completion validation.
 
 ## v0.1.0
 

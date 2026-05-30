@@ -316,37 +316,49 @@ func (s *Store) maybePruneOldMetadata(ctx context.Context, now time.Time) error 
 	return nil
 }
 
-// ListRequestLogs returns paginated request metadata.
-func (s *Store) ListRequestLogs(ctx context.Context, limit, offset int) ([]RequestLog, error) {
+// ListRequestLogs returns paginated request metadata and the total row count.
+func (s *Store) ListRequestLogs(ctx context.Context, limit, offset int) ([]RequestLog, int64, error) {
 	rows, err := s.conn.QueryContext(ctx, `
 		SELECT id, timestamp, key_id, model_requested, model_used, fallback_triggered,
-			backend_type, latency_ms, estimated_prompt_tokens, estimated_completion_tokens, status_code
+			backend_type, latency_ms, estimated_prompt_tokens, estimated_completion_tokens, status_code,
+			COUNT(*) OVER () AS total
 		FROM request_logs
 		ORDER BY timestamp DESC, id DESC
 		LIMIT ? OFFSET ?
 	`, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
 	var logs []RequestLog
+	var total int64
 	for rows.Next() {
 		var log RequestLog
 		var ts string
 		var fallback int
-		if err := rows.Scan(&log.ID, &ts, &log.KeyID, &log.ModelRequested, &log.ModelUsed, &fallback, &log.BackendType, &log.LatencyMS, &log.EstimatedPromptTokens, &log.EstimatedCompletionTokens, &log.StatusCode); err != nil {
-			return nil, err
+		if err := rows.Scan(&log.ID, &ts, &log.KeyID, &log.ModelRequested, &log.ModelUsed, &fallback, &log.BackendType, &log.LatencyMS, &log.EstimatedPromptTokens, &log.EstimatedCompletionTokens, &log.StatusCode, &total); err != nil {
+			return nil, 0, err
 		}
 		parsed, err := parseTime(ts)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		log.Timestamp = parsed
 		log.FallbackTriggered = fallback == 1
 		logs = append(logs, log)
 	}
-	return logs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if len(logs) == 0 && offset > 0 {
+		count, err := s.CountRequestLogs(ctx)
+		if err != nil {
+			return nil, 0, err
+		}
+		total = count
+	}
+	return logs, total, nil
 }
 
 // CountRequestLogs returns the total number of request log rows.

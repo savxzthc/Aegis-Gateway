@@ -33,7 +33,7 @@ import (
 var frontend embed.FS
 
 var (
-	version   = "0.1.0"
+	version   = "dev"
 	buildTime = "development"
 )
 
@@ -194,13 +194,6 @@ func openGatewayListener(cfg *config.Manager) (net.Listener, gatewayListenInfo, 
 		return listener, info, nil
 	}
 
-	if portHasOllama {
-		info.Warnings = append(info.Warnings, fmt.Sprintf("Port %d is already serving Ollama; Aegis moved to the next free port.", port))
-		if current.Backend.OllamaBaseURL == config.Defaults().Backend.OllamaBaseURL {
-			info.OllamaBaseURL = strings.TrimRight(probeURL, "/")
-		}
-		return openFallbackListener(host, port+1, info)
-	}
 	if port == config.Defaults().Server.Port && isAddrInUse(err) {
 		info.Warnings = append(info.Warnings, fmt.Sprintf("Port %d is already in use; Aegis moved to the next free port.", port))
 		return openFallbackListener(host, port+1, info)

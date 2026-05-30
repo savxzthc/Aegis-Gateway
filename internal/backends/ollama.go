@@ -73,8 +73,9 @@ func (b *OllamaBackend) Chat(ctx context.Context, req *ChatRequest, stream bool)
 		return nil, err
 	}
 	return &ChatResponse{
-		Model:   req.Model,
-		Content: out.Message.Content,
+		Model:        req.Model,
+		Content:      out.Message.Content,
+		FinishReason: out.DoneReason,
 		Usage: Usage{
 			PromptTokens:     out.PromptEvalCount,
 			CompletionTokens: out.EvalCount,
@@ -84,7 +85,7 @@ func (b *OllamaBackend) Chat(ctx context.Context, req *ChatRequest, stream bool)
 }
 
 // StreamChat streams token text from Ollama into ch.
-func (b *OllamaBackend) StreamChat(ctx context.Context, req *ChatRequest, ch chan<- string) error {
+func (b *OllamaBackend) StreamChat(ctx context.Context, req *ChatRequest, ch chan<- StreamChunk) error {
 	body := ollamaChatRequest{
 		Model:    req.Model,
 		Messages: wireMessages(req.Messages),
@@ -129,10 +130,24 @@ func (b *OllamaBackend) StreamChat(ctx context.Context, req *ChatRequest, ch cha
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case ch <- chunk.Message.Content:
+			case ch <- StreamChunk{Content: chunk.Message.Content}:
 			}
 		}
 		if chunk.Done {
+			if chunk.DoneReason != "" || chunk.PromptEvalCount > 0 || chunk.EvalCount > 0 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case ch <- StreamChunk{
+					FinishReason: chunk.DoneReason,
+					Usage: Usage{
+						PromptTokens:     chunk.PromptEvalCount,
+						CompletionTokens: chunk.EvalCount,
+						TotalTokens:      chunk.PromptEvalCount + chunk.EvalCount,
+					},
+				}:
+				}
+			}
 			return nil
 		}
 	}
@@ -159,9 +174,10 @@ type ollamaChatResponse struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	} `json:"message"`
-	Done            bool `json:"done"`
-	PromptEvalCount int  `json:"prompt_eval_count"`
-	EvalCount       int  `json:"eval_count"`
+	Done            bool   `json:"done"`
+	DoneReason      string `json:"done_reason"`
+	PromptEvalCount int    `json:"prompt_eval_count"`
+	EvalCount       int    `json:"eval_count"`
 }
 
 func backendStatusError(operation string, res *http.Response) error {

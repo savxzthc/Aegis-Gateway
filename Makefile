@@ -1,4 +1,4 @@
-VERSION ?= 0.1.0
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 .PHONY: dev frontend:dev frontend:build test audit verify build clean
 

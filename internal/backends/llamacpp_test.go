@@ -19,7 +19,7 @@ func TestLlamaCppBackendChatTranslatesRequest(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Fatal(err)
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}`))
 	}))
 	defer server.Close()
 
@@ -41,6 +41,9 @@ func TestLlamaCppBackendChatTranslatesRequest(t *testing.T) {
 	}
 	if resp.Content != "ok" || resp.Usage.TotalTokens != 6 {
 		t.Fatalf("unexpected response: %#v", resp)
+	}
+	if resp.FinishReason != "stop" {
+		t.Fatalf("finish reason = %q", resp.FinishReason)
 	}
 	if got.Model != "local" || got.Stream {
 		t.Fatalf("unexpected request basics: %#v", got)
@@ -69,12 +72,14 @@ func TestLlamaCppBackendStreamChatParsesSSE(t *testing.T) {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"lo"}}]}`)
 		fmt.Fprintln(w)
+		fmt.Fprintln(w, `data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"completion_tokens":2,"total_tokens":2}}`)
+		fmt.Fprintln(w)
 		fmt.Fprintln(w, `data: [DONE]`)
 		fmt.Fprintln(w)
 	}))
 	defer server.Close()
 
-	ch := make(chan string)
+	ch := make(chan StreamChunk)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- NewLlamaCppBackend(server.URL).StreamChat(context.Background(), &ChatRequest{
@@ -85,13 +90,26 @@ func TestLlamaCppBackendStreamChatParsesSSE(t *testing.T) {
 	}()
 
 	var tokens []string
-	for token := range ch {
-		tokens = append(tokens, token)
+	finish := ""
+	usage := Usage{}
+	for chunk := range ch {
+		if chunk.Content != "" {
+			tokens = append(tokens, chunk.Content)
+		}
+		if chunk.FinishReason != "" {
+			finish = chunk.FinishReason
+		}
+		if chunk.Usage.TotalTokens > 0 {
+			usage = chunk.Usage
+		}
 	}
 	if err := <-errCh; err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(tokens, []string{"hel", "lo"}) {
 		t.Fatalf("tokens = %#v", tokens)
+	}
+	if finish != "length" || usage.CompletionTokens != 2 {
+		t.Fatalf("finish=%q usage=%#v", finish, usage)
 	}
 }

@@ -19,7 +19,7 @@ func TestOllamaBackendChatTranslatesRequest(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Fatal(err)
 		}
-		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"},"prompt_eval_count":4,"eval_count":2}`))
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"},"done_reason":"stop","prompt_eval_count":4,"eval_count":2}`))
 	}))
 	defer server.Close()
 
@@ -41,6 +41,9 @@ func TestOllamaBackendChatTranslatesRequest(t *testing.T) {
 	}
 	if resp.Content != "ok" || resp.Usage.TotalTokens != 6 {
 		t.Fatalf("unexpected response: %#v", resp)
+	}
+	if resp.FinishReason != "stop" {
+		t.Fatalf("finish reason = %q", resp.FinishReason)
 	}
 	if got.Model != "llama3:8b" || got.Stream {
 		t.Fatalf("unexpected request basics: %#v", got)
@@ -65,11 +68,11 @@ func TestOllamaBackendStreamChatParsesTokens(t *testing.T) {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		fmt.Fprintln(w, `{"message":{"role":"assistant","content":"hel"}}`)
-		fmt.Fprintln(w, `{"message":{"role":"assistant","content":"lo"},"done":true}`)
+		fmt.Fprintln(w, `{"message":{"role":"assistant","content":"lo"},"done":true,"done_reason":"length","prompt_eval_count":4,"eval_count":2}`)
 	}))
 	defer server.Close()
 
-	ch := make(chan string)
+	ch := make(chan StreamChunk)
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- NewOllamaBackend(server.URL).StreamChat(context.Background(), &ChatRequest{
@@ -80,13 +83,26 @@ func TestOllamaBackendStreamChatParsesTokens(t *testing.T) {
 	}()
 
 	var tokens []string
-	for token := range ch {
-		tokens = append(tokens, token)
+	finish := ""
+	usage := Usage{}
+	for chunk := range ch {
+		if chunk.Content != "" {
+			tokens = append(tokens, chunk.Content)
+		}
+		if chunk.FinishReason != "" {
+			finish = chunk.FinishReason
+		}
+		if chunk.Usage.TotalTokens > 0 {
+			usage = chunk.Usage
+		}
 	}
 	if err := <-errCh; err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(tokens, []string{"hel", "lo"}) {
 		t.Fatalf("tokens = %#v", tokens)
+	}
+	if finish != "length" || usage.CompletionTokens != 2 {
+		t.Fatalf("finish=%q usage=%#v", finish, usage)
 	}
 }

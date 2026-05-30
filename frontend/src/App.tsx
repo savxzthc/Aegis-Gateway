@@ -50,7 +50,7 @@ export default function App(): JSX.Element {
     }
   }, [error]);
 
-  const version = useMemo(() => config?.runtime.app_version ?? '0.1.0', [config]);
+  const version = useMemo(() => config?.runtime.app_version ?? 'dev', [config]);
 
   if (!token) {
     const submit = (event: FormEvent<HTMLFormElement>) => {

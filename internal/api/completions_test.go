@@ -46,15 +46,15 @@ func TestValidateChatRequestAcceptsDeveloperAndContentParts(t *testing.T) {
 	}
 }
 
-func TestValidateSamplingAllowsNForSingleCompletionCompatibility(t *testing.T) {
+func TestValidateSamplingRejectsUnsupportedN(t *testing.T) {
 	n := 2
 	req := &backends.ChatRequest{
 		Model:    "llama3:8b",
 		Messages: []backends.ChatMessage{{Role: "user", Content: backends.NewMessageContent("hello")}},
 		N:        &n,
 	}
-	if err := validateChatRequest(req); err != nil {
-		t.Fatal(err)
+	if err := validateChatRequest(req); err == nil {
+		t.Fatal("expected n validation error")
 	}
 }
 
@@ -101,10 +101,16 @@ func TestRouteErrorCodeUsesSentinels(t *testing.T) {
 
 func TestCompletionFinishReasonUsesLengthAtMaxTokens(t *testing.T) {
 	maxTokens := 4
-	if got := completionFinishReason(&maxTokens, 4); got != "length" {
+	if got := completionFinishReason("stop", &maxTokens, 4); got != "stop" {
 		t.Fatalf("finish reason = %q", got)
 	}
-	if got := completionFinishReason(&maxTokens, 3); got != "stop" {
+	if got := completionFinishReason("length", &maxTokens, 1); got != "length" {
+		t.Fatalf("finish reason = %q", got)
+	}
+	if got := completionFinishReason("", &maxTokens, 4); got != "length" {
+		t.Fatalf("finish reason = %q", got)
+	}
+	if got := completionFinishReason("", &maxTokens, 3); got != "stop" {
 		t.Fatalf("finish reason = %q", got)
 	}
 }

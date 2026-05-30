@@ -87,6 +87,54 @@ func TestEnsureLoadedFallsBackToCommandAndPoll(t *testing.T) {
 	}
 }
 
+func TestEnsureLoadedWaitersUseLoadNotification(t *testing.T) {
+	cfg := lifecycleConfig(t)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
+	var mu sync.Mutex
+	generateCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/generate" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		mu.Lock()
+		generateCalls++
+		mu.Unlock()
+		once.Do(func() { close(started) })
+		<-release
+		_, _ = w.Write([]byte(`{"done":true}`))
+	}))
+	defer server.Close()
+	setOllamaBaseURL(t, cfg, server.URL)
+
+	manager := NewManager(cfg)
+	manager.command = func(ctx context.Context, name string, args ...string) error {
+		t.Fatalf("command should not run when warmup succeeds: %s %v", name, args)
+		return nil
+	}
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- manager.EnsureLoaded(context.Background(), "llama3:8b") }()
+	<-started
+	go func() { errCh <- manager.EnsureLoaded(context.Background(), "llama3:8b") }()
+
+	time.Sleep(10 * time.Millisecond)
+	mu.Lock()
+	callsBeforeRelease := generateCalls
+	mu.Unlock()
+	if callsBeforeRelease != 1 {
+		t.Fatalf("generate calls before release = %d, want 1", callsBeforeRelease)
+	}
+	close(release)
+
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestMarkIdleUnloadsAfterTimeout(t *testing.T) {
 	cfg := lifecycleConfig(t)
 	idle := 1
