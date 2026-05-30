@@ -128,8 +128,8 @@ func TestOpenGatewayListenerMovesWhenPortIsOllama(t *testing.T) {
 	if strings.HasSuffix(info.URL, ":"+rawPort) {
 		t.Fatalf("Aegis stayed on Ollama port: %#v", info)
 	}
-	if got := info.OllamaBaseURL; got != "http://127.0.0.1:"+rawPort {
-		t.Fatalf("ollama discovery = %q", got)
+	if got := info.OllamaBaseURL; got != "" {
+		t.Fatalf("ollama discovery should not adopt the dashboard port, got %q", got)
 	}
 	if len(info.Warnings) == 0 {
 		t.Fatal("expected a collision warning")
@@ -170,6 +170,26 @@ func TestNormalizeOllamaHostAddsSchemeAndDefaultPort(t *testing.T) {
 	}
 	if got != "http://127.0.0.1:11434" {
 		t.Fatalf("normalized host = %q", got)
+	}
+}
+
+func TestApplyOllamaHostOverrideIgnoresDashboardPort(t *testing.T) {
+	t.Setenv("OLLAMA_HOST", "127.0.0.1:9000")
+	cfg, err := config.LoadManager(filepath.Join(t.TempDir(), "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	warnings, err := applyOllamaHostOverride(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+	if got := cfg.Get().Backend.OllamaBaseURL; got != config.Defaults().Backend.OllamaBaseURL {
+		t.Fatalf("ollama url = %q", got)
 	}
 }
 

@@ -44,13 +44,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	if err := applyOllamaHostOverride(cfg); err != nil {
+	startupWarnings, err := applyOllamaHostOverride(cfg)
+	if err != nil {
 		log.Fatalf("ollama host: %v", err)
 	}
 	listener, listenInfo, err := openGatewayListener(cfg)
 	if err != nil {
 		log.Fatalf("server: %v", err)
 	}
+	listenInfo.Warnings = append(startupWarnings, listenInfo.Warnings...)
 	defer listener.Close()
 	if listenInfo.OllamaBaseURL != "" {
 		if err := cfg.SetRuntimeOllamaBaseURL(listenInfo.OllamaBaseURL); err != nil {
@@ -180,10 +182,7 @@ func openGatewayListener(cfg *config.Manager) (net.Listener, gatewayListenInfo, 
 	probeURL := probeURL(host, port)
 	portHasOllama := isOllamaRoot(probeURL)
 	if portHasOllama {
-		info.Warnings = append(info.Warnings, fmt.Sprintf("Port %d is already serving Ollama; Aegis moved to the next free port.", port))
-		if current.Backend.OllamaBaseURL == config.Defaults().Backend.OllamaBaseURL {
-			info.OllamaBaseURL = strings.TrimRight(probeURL, "/")
-		}
+		info.Warnings = append(info.Warnings, fmt.Sprintf("Port %d is already serving Ollama; Aegis moved to the next free port. Close the conflicting Ollama process to use port %d for Aegis.", port, port))
 		return openFallbackListener(host, port+1, info)
 	}
 	if portAcceptsConnections(host, port) {
@@ -224,23 +223,27 @@ func openFallbackListener(host string, startPort int, info gatewayListenInfo) (n
 	return nil, gatewayListenInfo{}, fmt.Errorf("no free Aegis port found after %d", startPort-1)
 }
 
-func applyOllamaHostOverride(cfg *config.Manager) error {
+func applyOllamaHostOverride(cfg *config.Manager) ([]string, error) {
 	env := strings.TrimSpace(os.Getenv("OLLAMA_HOST"))
 	if env == "" {
-		return nil
+		return nil, nil
 	}
 	baseURL, err := normalizeOllamaHost(env)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if cfg.Get().Backend.OllamaBaseURL != config.Defaults().Backend.OllamaBaseURL {
-		return nil
+	current := cfg.Get()
+	if current.Backend.OllamaBaseURL != config.Defaults().Backend.OllamaBaseURL {
+		return nil, nil
+	}
+	if serverSharesOllamaPort(current.Server.Host, current.Server.Port, baseURL) {
+		return []string{fmt.Sprintf("Ignoring OLLAMA_HOST=%s because it conflicts with the Aegis dashboard port %d; Ollama will use %s instead.", env, current.Server.Port, current.Backend.OllamaBaseURL)}, nil
 	}
 	if err := cfg.SetRuntimeOllamaBaseURL(baseURL); err != nil {
-		return err
+		return nil, err
 	}
 	log.Printf("aegis: using OLLAMA_HOST for Ollama backend: %s", baseURL)
-	return nil
+	return nil, nil
 }
 
 func normalizeOllamaHost(value string) (string, error) {
