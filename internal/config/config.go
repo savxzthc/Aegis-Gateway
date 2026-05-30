@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -56,9 +57,10 @@ type ModelConfig struct {
 
 // Manager provides concurrency-safe access to runtime configuration.
 type Manager struct {
-	mu   sync.RWMutex
-	path string
-	cfg  Config
+	mu      sync.RWMutex
+	writeMu sync.Mutex
+	path    string
+	cfg     Config
 }
 
 // EditablePatch contains settings the dashboard may update at runtime.
@@ -177,9 +179,10 @@ func (m *Manager) SetRuntimeOllamaBaseURL(baseURL string) error {
 
 // PatchEditable updates supported dashboard settings and writes config.toml.
 func (m *Manager) PatchEditable(patch EditablePatch) (Config, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
 
+	m.mu.Lock()
 	next := cloneConfig(m.cfg)
 	if patch.Port != nil {
 		next.Server.Port = *patch.Port
@@ -194,20 +197,25 @@ func (m *Manager) PatchEditable(patch EditablePatch) (Config, error) {
 		next.Backend.OllamaBaseURL = strings.TrimRight(*patch.OllamaBaseURL, "/")
 	}
 	if err := Validate(&next); err != nil {
+		m.mu.Unlock()
 		return Config{}, err
 	}
+	m.mu.Unlock()
 	if err := writeTOML(m.path, next); err != nil {
 		return Config{}, err
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.cfg = next
 	return cloneConfig(m.cfg), nil
 }
 
 // RegisterModel adds or updates one model registry entry and writes config.toml.
 func (m *Manager) RegisterModel(name string, model ModelConfig) (Config, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
 
+	m.mu.Lock()
 	name = strings.TrimSpace(name)
 	next := cloneConfig(m.cfg)
 	if next.Models.Registry == nil {
@@ -215,11 +223,15 @@ func (m *Manager) RegisterModel(name string, model ModelConfig) (Config, error) 
 	}
 	next.Models.Registry[name] = model
 	if err := Validate(&next); err != nil {
+		m.mu.Unlock()
 		return Config{}, err
 	}
+	m.mu.Unlock()
 	if err := writeTOML(m.path, next); err != nil {
 		return Config{}, err
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.cfg = next
 	return cloneConfig(m.cfg), nil
 }
@@ -320,7 +332,39 @@ func cloneRegistry(in map[string]ModelConfig) map[string]ModelConfig {
 }
 
 func writeTOML(path string, cfg Config) error {
-	return os.WriteFile(path, []byte(commentedTOML(cfg)), 0o600)
+	dir := filepath.Dir(path)
+	temp, err := os.CreateTemp(dir, ".aegis-config-*.toml")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if _, err := temp.WriteString(commentedTOML(cfg)); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return err
+		}
+		if retryErr := os.Rename(tempPath, path); retryErr != nil {
+			return retryErr
+		}
+	}
+	cleanup = false
+	return nil
 }
 
 func commentedTOML(cfg Config) string {

@@ -93,6 +93,12 @@ type ChatRequest struct {
 	FrequencyPenalty *float64      `json:"frequency_penalty,omitempty"`
 	N                *int          `json:"n,omitempty"`
 	User             string        `json:"user,omitempty"`
+	StreamOptions    StreamOptions `json:"stream_options,omitempty"`
+}
+
+// StreamOptions contains OpenAI-compatible streaming options.
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
 // CompletionRequest is the typed legacy completion request.

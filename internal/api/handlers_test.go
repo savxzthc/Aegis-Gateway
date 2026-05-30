@@ -121,6 +121,9 @@ func TestChatCompletionsReturnsOpenAIShapeAndRoutingHeaders(t *testing.T) {
 	if out.Object != "chat.completion" || out.Choices[0].Message.Content.String() != "hello from test" {
 		t.Fatalf("unexpected response: %#v", out)
 	}
+	if out.SystemFingerprint != systemFingerprint {
+		t.Fatalf("system fingerprint = %q", out.SystemFingerprint)
+	}
 	if out.Usage.CompletionTokens != 3 {
 		t.Fatalf("usage not preserved: %#v", out.Usage)
 	}
@@ -159,7 +162,7 @@ func TestChatCompletionsStreamsOpenAIChunks(t *testing.T) {
 		GoVersion:        "test",
 	}
 
-	body := []byte(`{"model":"llama3:8b","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
+	body := []byte(`{"model":"llama3:8b","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hello"}]}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	res := httptest.NewRecorder()
 	server.ChatCompletions(res, req)
@@ -177,6 +180,8 @@ func TestChatCompletionsStreamsOpenAIChunks(t *testing.T) {
 		`"content":"hello"`,
 		`"content":" stream"`,
 		`"finish_reason":"stop"`,
+		`"system_fingerprint":"aegis-local"`,
+		`"usage":{"prompt_tokens":3,"completion_tokens":3,"total_tokens":6}`,
 		"data: [DONE]\n\n",
 	} {
 		if !strings.Contains(out, want) {

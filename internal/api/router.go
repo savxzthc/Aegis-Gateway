@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,6 +35,7 @@ type Server struct {
 	Version          string
 	BuildTime        string
 	GoVersion        string
+	Shutdown         <-chan struct{}
 }
 
 // NewRouter wires middleware and Aegis API routes.
@@ -94,9 +96,15 @@ type errorResponse struct {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value interface{}) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(value); err != nil {
+		http.Error(w, `{"error":"response encoding failed","code":"RESPONSE_ENCODING_FAILED"}`, http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", buf.Len()))
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	_, _ = w.Write(buf.Bytes())
 }
 
 func writeError(w http.ResponseWriter, status int, message, code string) {

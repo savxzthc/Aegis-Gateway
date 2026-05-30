@@ -187,6 +187,34 @@ func TestMiddlewareIgnoresForwardedForWhenLoggingFailures(t *testing.T) {
 	}
 }
 
+func TestMiddlewareRateLimitsAuthFailures(t *testing.T) {
+	store := &authStoreStub{secrets: []db.APIKeySecret{{
+		ID:   "key_1",
+		Salt: "salt",
+		Hash: HashKey("right", "salt"),
+	}}}
+	mw := NewMiddleware(store, NewRateLimiter(), func() int { return 1 })
+	now := time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC)
+	mw.nowFunc = func() time.Time { return now }
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not run")
+	}))
+
+	for i, want := range []int{http.StatusUnauthorized, http.StatusTooManyRequests} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		req.Header.Set("Authorization", "Bearer wrong")
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != want {
+			t.Fatalf("request %d got %d want %d", i, res.Code, want)
+		}
+	}
+	if store.failures != 1 {
+		t.Fatalf("logged failures = %d, want 1", store.failures)
+	}
+}
+
 func TestMiddlewareRateLimitsPerKeyAndIP(t *testing.T) {
 	key := "secret"
 	salt := "salt"

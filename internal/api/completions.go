@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/savxzthc/aegis-gateway/internal/auth"
@@ -217,8 +219,10 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend back
 	prepareSSE(w)
 	ch := make(chan backends.StreamChunk)
 	errCh := make(chan error, 1)
+	streamCtx, cancelStream := s.streamContext(r.Context())
+	defer cancelStream()
 	go func() {
-		errCh <- backend.StreamChat(r.Context(), req, ch)
+		errCh <- backend.StreamChat(streamCtx, req, ch)
 		close(ch)
 	}()
 
@@ -226,10 +230,11 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend back
 	id := responseID("chatcmpl")
 	created := time.Now().Unix()
 	writeSSE(w, flusher, chatCompletionChunk{
-		ID:      id,
-		Object:  "chat.completion.chunk",
-		Created: created,
-		Model:   model,
+		ID:                id,
+		Object:            "chat.completion.chunk",
+		Created:           created,
+		Model:             model,
+		SystemFingerprint: systemFingerprint,
 		Choices: []chatStreamChoice{{
 			Index: 0,
 			Delta: chatDelta{Role: "assistant"},
@@ -250,31 +255,39 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend back
 			completionTokens += estimateText(chunk.Content)
 		}
 		writeSSE(w, flusher, chatCompletionChunk{
-			ID:      id,
-			Object:  "chat.completion.chunk",
-			Created: created,
-			Model:   model,
+			ID:                id,
+			Object:            "chat.completion.chunk",
+			Created:           created,
+			Model:             model,
+			SystemFingerprint: systemFingerprint,
 			Choices: []chatStreamChoice{{
 				Index: 0,
 				Delta: chatDelta{Content: chunk.Content},
 			}},
 		})
 	}
-	if err := <-errCh; err != nil && !isContextDone(r.Context()) {
+	if err := <-errCh; err != nil && !isContextDone(streamCtx) {
 		s.logPrivateFailure(r, "BACKEND_STREAM_ERROR", model, "")
 		writeSSE(w, flusher, errorResponse{Error: "backend stream failed", Code: "BACKEND_STREAM_ERROR"})
 		return streamResult{Tokens: completionTokens, Status: http.StatusBadGateway}
 	}
-	if isContextDone(r.Context()) {
+	if isContextDone(streamCtx) {
 		return streamResult{Tokens: completionTokens, Status: 499}
 	}
 	finish := completionFinishReason(finishReason, req.MaxTokens, completionTokens)
+	var usage *backends.Usage
+	if req.StreamOptions.IncludeUsage {
+		promptTokens := estimateMessages(req.Messages)
+		usage = &backends.Usage{PromptTokens: promptTokens, CompletionTokens: completionTokens, TotalTokens: promptTokens + completionTokens}
+	}
 	writeSSE(w, flusher, chatCompletionChunk{
-		ID:      id,
-		Object:  "chat.completion.chunk",
-		Created: created,
-		Model:   model,
-		Choices: []chatStreamChoice{{Index: 0, Delta: chatDelta{}, FinishReason: &finish}},
+		ID:                id,
+		Object:            "chat.completion.chunk",
+		Created:           created,
+		Model:             model,
+		SystemFingerprint: systemFingerprint,
+		Choices:           []chatStreamChoice{{Index: 0, Delta: chatDelta{}, FinishReason: &finish}},
+		Usage:             usage,
 	})
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
@@ -290,8 +303,10 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, backen
 	prepareSSE(w)
 	ch := make(chan backends.StreamChunk)
 	errCh := make(chan error, 1)
+	streamCtx, cancelStream := s.streamContext(r.Context())
+	defer cancelStream()
 	go func() {
-		errCh <- backend.StreamChat(r.Context(), req, ch)
+		errCh <- backend.StreamChat(streamCtx, req, ch)
 		close(ch)
 	}()
 
@@ -320,21 +335,22 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, backen
 			Choices: []completionChoice{{Text: chunk.Content, Index: 0}},
 		})
 	}
-	if err := <-errCh; err != nil && !isContextDone(r.Context()) {
+	if err := <-errCh; err != nil && !isContextDone(streamCtx) {
 		s.logPrivateFailure(r, "BACKEND_STREAM_ERROR", model, "")
 		writeSSE(w, flusher, errorResponse{Error: "backend stream failed", Code: "BACKEND_STREAM_ERROR"})
 		return streamResult{Tokens: completionTokens, Status: http.StatusBadGateway}
 	}
-	if isContextDone(r.Context()) {
+	if isContextDone(streamCtx) {
 		return streamResult{Tokens: completionTokens, Status: 499}
 	}
 	finish := completionFinishReason(finishReason, req.MaxTokens, completionTokens)
 	writeSSE(w, flusher, completionChunk{
-		ID:      id,
-		Object:  "text_completion",
-		Created: created,
-		Model:   model,
-		Choices: []completionChoice{{Text: "", Index: 0, FinishReason: &finish}},
+		ID:                id,
+		Object:            "text_completion",
+		Created:           created,
+		Model:             model,
+		SystemFingerprint: systemFingerprint,
+		Choices:           []completionChoice{{Text: "", Index: 0, FinishReason: &finish}},
 	})
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
@@ -353,10 +369,25 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, value interface{}) {
 	flusher.Flush()
 }
 
+func (s *Server) streamContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if s.Shutdown == nil {
+		return context.WithCancel(parent)
+	}
+	ctx, cancel := context.WithCancel(parent)
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-s.Shutdown:
+			cancel()
+		}
+	}()
+	return ctx, cancel
+}
+
 func (s *Server) logRequest(ctx context.Context, started time.Time, keyID, requested, used string, fallback bool, backendType string, status int, promptTokens, completionTokens int) {
 	if keyID == "" {
-		log.Printf("aegis: request log missing authenticated key id")
-		keyID = "unknown"
+		log.Printf("aegis: request log skipped because authenticated key id is missing")
+		return
 	}
 	if used == "" {
 		used = requested
@@ -465,12 +496,43 @@ func estimateText(value string) int {
 	if value == "" {
 		return 0
 	}
-	chars := len([]rune(value))
-	tokens := chars / 4
-	if tokens < 1 {
+	runes := []rune(value)
+	asciiBytes := 0
+	nonLatin := 0
+	symbols := 0
+	for _, r := range runes {
+		switch {
+		case r <= unicode.MaxASCII:
+			asciiBytes++
+			if unicode.IsPunct(r) || unicode.IsSymbol(r) {
+				symbols++
+			}
+		case unicode.In(r, unicode.Han, unicode.Hangul, unicode.Hiragana, unicode.Katakana):
+			nonLatin++
+		case !unicode.IsSpace(r):
+			nonLatin++
+		}
+	}
+	byBytes := (asciiBytes + 3) / 4
+	byWords := len(tokenEstimateRE.FindAllString(value, -1))
+	bySymbols := symbols / 2
+	estimate := maxInt(byBytes, byWords+bySymbols, nonLatin)
+	if estimate < 1 {
 		return 1
 	}
-	return tokens
+	return estimate
+}
+
+var tokenEstimateRE = regexp.MustCompile(`[A-Za-z0-9_]+|[^\sA-Za-z0-9_]`)
+
+func maxInt(values ...int) int {
+	maximum := 0
+	for _, value := range values {
+		if value > maximum {
+			maximum = value
+		}
+	}
+	return maximum
 }
 
 func responseID(prefix string) string {
@@ -482,12 +544,13 @@ func responseID(prefix string) string {
 }
 
 type chatCompletionResponse struct {
-	ID      string         `json:"id"`
-	Object  string         `json:"object"`
-	Created int64          `json:"created"`
-	Model   string         `json:"model"`
-	Choices []chatChoice   `json:"choices"`
-	Usage   backends.Usage `json:"usage"`
+	ID                string         `json:"id"`
+	Object            string         `json:"object"`
+	Created           int64          `json:"created"`
+	Model             string         `json:"model"`
+	SystemFingerprint string         `json:"system_fingerprint"`
+	Choices           []chatChoice   `json:"choices"`
+	Usage             backends.Usage `json:"usage"`
 }
 
 type chatChoice struct {
@@ -497,11 +560,13 @@ type chatChoice struct {
 }
 
 type chatCompletionChunk struct {
-	ID      string             `json:"id"`
-	Object  string             `json:"object"`
-	Created int64              `json:"created"`
-	Model   string             `json:"model"`
-	Choices []chatStreamChoice `json:"choices"`
+	ID                string             `json:"id"`
+	Object            string             `json:"object"`
+	Created           int64              `json:"created"`
+	Model             string             `json:"model"`
+	SystemFingerprint string             `json:"system_fingerprint"`
+	Choices           []chatStreamChoice `json:"choices"`
+	Usage             *backends.Usage    `json:"usage,omitempty"`
 }
 
 type chatStreamChoice struct {
@@ -525,11 +590,12 @@ type completionResponse struct {
 }
 
 type completionChunk struct {
-	ID      string             `json:"id"`
-	Object  string             `json:"object"`
-	Created int64              `json:"created"`
-	Model   string             `json:"model"`
-	Choices []completionChoice `json:"choices"`
+	ID                string             `json:"id"`
+	Object            string             `json:"object"`
+	Created           int64              `json:"created"`
+	Model             string             `json:"model"`
+	SystemFingerprint string             `json:"system_fingerprint,omitempty"`
+	Choices           []completionChoice `json:"choices"`
 }
 
 type completionChoice struct {
@@ -547,18 +613,16 @@ func completionFinishReason(backendReason string, maxTokens *int, completionToke
 	case "tool_calls", "content_filter":
 		return strings.ToLower(strings.TrimSpace(backendReason))
 	}
-	if maxTokens != nil && completionTokens >= *maxTokens {
-		return "length"
-	}
 	return "stop"
 }
 
 func newChatCompletionResponse(model, content string, promptTokens, completionTokens int, finishReason string) chatCompletionResponse {
 	return chatCompletionResponse{
-		ID:      responseID("chatcmpl"),
-		Object:  "chat.completion",
-		Created: time.Now().Unix(),
-		Model:   model,
+		ID:                responseID("chatcmpl"),
+		Object:            "chat.completion",
+		Created:           time.Now().Unix(),
+		Model:             model,
+		SystemFingerprint: systemFingerprint,
 		Choices: []chatChoice{{
 			Index:        0,
 			Message:      backends.ChatMessage{Role: "assistant", Content: backends.NewMessageContent(content)},
@@ -571,6 +635,8 @@ func newChatCompletionResponse(model, content string, promptTokens, completionTo
 		},
 	}
 }
+
+const systemFingerprint = "aegis-local"
 
 func newCompletionResponse(model, content string, promptTokens, completionTokens int, finish string) completionResponse {
 	return completionResponse{

@@ -100,6 +100,9 @@ func main() {
 		BuildTime: buildTime,
 		GoVersion: runtime.Version(),
 	}
+	listenInfo.Warnings = append(listenInfo.Warnings, backendReachabilityWarnings(app)...)
+	shutdownStreams := make(chan struct{})
+	app.Shutdown = shutdownStreams
 
 	rateLimiter := auth.NewRateLimiter()
 	authMiddleware := auth.NewMiddleware(store, rateLimiter, cfg.RateLimitRPM)
@@ -119,6 +122,9 @@ func main() {
 		WriteTimeout:      15 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 	}
+	server.RegisterOnShutdown(func() {
+		close(shutdownStreams)
+	})
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -205,6 +211,9 @@ func openFallbackListener(host string, startPort int, info gatewayListenInfo) (n
 	for port := startPort; port < startPort+100 && port <= 65535; port++ {
 		listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 		if err == nil {
+			if port != startPort {
+				info.Warnings = append(info.Warnings, fmt.Sprintf("Aegis skipped occupied fallback ports and selected %d; use the printed dashboard URL.", port))
+			}
 			info.URL = displayURL(host, listener.Addr())
 			return listener, info, nil
 		}
@@ -494,9 +503,15 @@ func rootHandler(apiHandler http.Handler, store readinessStore) (http.Handler, e
 }
 
 func writeRootJSON(w http.ResponseWriter, status int, value interface{}) {
+	var buf strings.Builder
+	if err := json.NewEncoder(&buf).Encode(value); err != nil {
+		http.Error(w, `{"error":"response encoding failed","code":"RESPONSE_ENCODING_FAILED"}`, http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	_, _ = w.Write([]byte(buf.String()))
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -518,10 +533,41 @@ func printBanner(url string, cfg config.Config, warnings []string) {
 		fmt.Printf("warning: %s\n", warning)
 	}
 	fmt.Printf("dashboard: %s\n", url)
+	fmt.Printf("version: %s\n", version)
+	fmt.Printf("build time: %s\n", buildTime)
 	fmt.Printf("default backend: %s\n", cfg.Backend.DefaultType)
 	fmt.Printf("ollama backend: %s\n", cfg.Backend.OllamaBaseURL)
 	fmt.Printf("llama.cpp backend: %s\n", cfg.Backend.LlamaCppBaseURL)
 	fmt.Println()
+}
+
+func backendReachabilityWarnings(server *api.Server) []string {
+	cfg := server.Config.Get()
+	used := map[string]bool{}
+	for _, model := range cfg.Models.Registry {
+		backendType := model.Backend
+		if backendType == "" {
+			backendType = cfg.Backend.DefaultType
+		}
+		used[backendType] = true
+	}
+	var warnings []string
+	for backendType := range used {
+		server.BackendsMu.RLock()
+		backend := server.Backends[backendType]
+		server.BackendsMu.RUnlock()
+		if backend == nil {
+			warnings = append(warnings, fmt.Sprintf("%s backend is configured but unavailable.", backendType))
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := backend.Ping(ctx)
+		cancel()
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s backend is not reachable yet: %v", backendType, err))
+		}
+	}
+	return warnings
 }
 
 func printInitialKey(key string) {

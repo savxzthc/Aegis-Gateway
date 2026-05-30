@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -21,8 +22,9 @@ type contextKey string
 const keyIDContextKey contextKey = "aegis.key_id"
 
 const (
-	tokenCacheTTL      = 10 * time.Second
+	tokenCacheTTL      = 3 * time.Second
 	tokenCacheMaxItems = 4096
+	authFailureRPM     = 30
 )
 
 // Store captures database methods required by auth middleware.
@@ -189,8 +191,21 @@ func KeyIDFromContext(ctx context.Context) string {
 }
 
 func (m *Middleware) unauthorized(w http.ResponseWriter, r *http.Request, ip string) {
-	_ = m.store.LogAuthFailure(r.Context(), ip, m.nowFunc())
+	now := m.nowFunc()
+	if ok, retryAfter := m.limiter.Allow("auth-failure:"+ip, authFailureLimit(m.rpmFunc()), now); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+		writeAuthError(w, http.StatusTooManyRequests, "too many authentication failures", "AUTH_FAILURE_RATE_LIMITED")
+		return
+	}
+	_ = m.store.LogAuthFailure(r.Context(), ip, now)
 	writeAuthError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+}
+
+func authFailureLimit(configured int) int {
+	if configured <= 0 || configured > authFailureRPM {
+		return authFailureRPM
+	}
+	return configured
 }
 
 func bearerToken(header string) string {
@@ -210,10 +225,13 @@ func clientIP(r *http.Request) string {
 }
 
 func writeAuthError(w http.ResponseWriter, status int, message, code string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(struct {
+	var buf bytes.Buffer
+	_ = json.NewEncoder(&buf).Encode(struct {
 		Error string `json:"error"`
 		Code  string `json:"code"`
 	}{Error: message, Code: code})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	w.WriteHeader(status)
+	_, _ = w.Write(buf.Bytes())
 }

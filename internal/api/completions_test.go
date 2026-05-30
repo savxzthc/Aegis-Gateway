@@ -99,7 +99,7 @@ func TestRouteErrorCodeUsesSentinels(t *testing.T) {
 	}
 }
 
-func TestCompletionFinishReasonUsesLengthAtMaxTokens(t *testing.T) {
+func TestCompletionFinishReasonUsesBackendReason(t *testing.T) {
 	maxTokens := 4
 	if got := completionFinishReason("stop", &maxTokens, 4); got != "stop" {
 		t.Fatalf("finish reason = %q", got)
@@ -107,10 +107,22 @@ func TestCompletionFinishReasonUsesLengthAtMaxTokens(t *testing.T) {
 	if got := completionFinishReason("length", &maxTokens, 1); got != "length" {
 		t.Fatalf("finish reason = %q", got)
 	}
-	if got := completionFinishReason("", &maxTokens, 4); got != "length" {
+	if got := completionFinishReason("", &maxTokens, 4); got != "stop" {
 		t.Fatalf("finish reason = %q", got)
 	}
 	if got := completionFinishReason("", &maxTokens, 3); got != "stop" {
 		t.Fatalf("finish reason = %q", got)
+	}
+}
+
+func TestEstimateTextHandlesDenseInputs(t *testing.T) {
+	if got := estimateText("https://example.com/a/b?x=1&y=2"); got < 10 {
+		t.Fatalf("url estimate = %d, want at least 10", got)
+	}
+	if got := estimateText("fmt.Println(\"hello\")"); got < 6 {
+		t.Fatalf("code estimate = %d, want at least 6", got)
+	}
+	if got := estimateText("こんにちは世界"); got < 7 {
+		t.Fatalf("non-latin estimate = %d, want at least 7", got)
 	}
 }

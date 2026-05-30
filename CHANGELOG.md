@@ -12,6 +12,7 @@
 - Added clearer startup backend output and LAN binding warnings.
 - Added token-cache eviction, request log totals, explicit frontend API timeouts, and llama.cpp backend refresh on config updates.
 - Hardened release metadata, completion finish reasons, log pagination, lifecycle load waiting, and unsupported multi-completion validation.
+- Added SSE shutdown cancellation, stricter auth-failure throttling, atomic config rewrites, JSON content lengths, stream usage support, and startup backend reachability warnings.
 
 ## v0.1.0
 

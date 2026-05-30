@@ -113,3 +113,21 @@ func TestLlamaCppBackendStreamChatParsesSSE(t *testing.T) {
 		t.Fatalf("finish=%q usage=%#v", finish, usage)
 	}
 }
+
+func TestLlamaCppBackendUsesAlternateStopReasonFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"stop_reason":"length"}],"usage":{"completion_tokens":2,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	resp, err := NewLlamaCppBackend(server.URL).Chat(context.Background(), &ChatRequest{
+		Model:    "local",
+		Messages: []ChatMessage{{Role: "user", Content: NewMessageContent("hello")}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.FinishReason != "length" {
+		t.Fatalf("finish reason = %q", resp.FinishReason)
+	}
+}

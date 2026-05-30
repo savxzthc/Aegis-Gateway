@@ -83,6 +83,8 @@ Every API response includes `X-Request-Id` and `X-Aegis-Version` so local client
 
 `/v1/completions` is implemented as a compatibility bridge over chat-capable local backends. Aegis wraps the legacy prompt as a single user message and supports only one completion per request; `n` values greater than `1` return `400 INVALID_REQUEST`.
 
+For chat streaming, Aegis accepts `stream_options: {"include_usage": true}` and includes a final usage object when the backend reports or Aegis can estimate token counts. Responses also include `system_fingerprint` for OpenAI-compatible clients that require the field.
+
 ## config.toml Reference
 
 | Field | Type | Default | Description |
@@ -106,7 +108,9 @@ Every active API key is an admin key in the current release. Any valid key can c
 
 The default bind address is `0.0.0.0` for LAN access. Aegis prints a warning when it is reachable from other devices on the network; set `server.host = "127.0.0.1"` for loopback-only use.
 
-Aegis does not currently trust `X-Forwarded-For` or `X-Real-IP`. If you place it behind a reverse proxy, rate limits and auth-failure logs use the proxy connection address unless that proxy runs on the same machine and you add your own network controls.
+Aegis does not currently trust `X-Forwarded-For` or `X-Real-IP`. If you place it behind a reverse proxy, rate limits and auth-failure logs use the proxy connection address unless that proxy runs on the same machine and you add your own network controls. Failed authentication attempts are rate-limited per observed remote address.
+
+Validated bearer tokens are cached in memory for 3 seconds to avoid repeated PBKDF2 work. Key create and revoke operations inside Aegis invalidate the database key cache immediately; direct external edits to `aegis.db` may take up to the token cache window to be reflected.
 
 During shutdown, Aegis gives HTTP requests up to 10 seconds to finish and model unloads up to 15 seconds. Active streaming responses may be interrupted if the process receives SIGTERM while a model is still generating.
 

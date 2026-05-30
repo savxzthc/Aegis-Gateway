@@ -80,8 +80,9 @@ func (b *LlamaCppBackend) Chat(ctx context.Context, req *ChatRequest, stream boo
 	finishReason := ""
 	if len(out.Choices) > 0 {
 		content = out.Choices[0].Message.Content
-		finishReason = out.Choices[0].FinishReason
+		finishReason = firstNonEmpty(out.Choices[0].FinishReason, out.Choices[0].StopReason)
 	}
+	finishReason = firstNonEmpty(finishReason, out.StopReason, out.DoneReason)
 	return &ChatResponse{Model: req.Model, Content: content, Usage: out.Usage, FinishReason: finishReason}, nil
 }
 
@@ -140,7 +141,7 @@ func (b *LlamaCppBackend) StreamChat(ctx context.Context, req *ChatRequest, ch c
 		}
 		event := StreamChunk{
 			Content:      chunk.Choices[0].Delta.Content,
-			FinishReason: chunk.Choices[0].FinishReason,
+			FinishReason: firstNonEmpty(chunk.Choices[0].FinishReason, chunk.Choices[0].StopReason, chunk.StopReason, chunk.DoneReason),
 			Usage:        chunk.Usage,
 		}
 		if event.Content == "" && event.FinishReason == "" && event.Usage.TotalTokens == 0 {
@@ -170,8 +171,11 @@ type llamaChatResponse struct {
 	Choices []struct {
 		Message      wireChatMessage `json:"message"`
 		FinishReason string          `json:"finish_reason"`
+		StopReason   string          `json:"stop_reason"`
 	} `json:"choices"`
-	Usage Usage `json:"usage"`
+	StopReason string `json:"stop_reason"`
+	DoneReason string `json:"done_reason"`
+	Usage      Usage  `json:"usage"`
 }
 
 type llamaStreamResponse struct {
@@ -180,6 +184,18 @@ type llamaStreamResponse struct {
 			Content string `json:"content"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
+		StopReason   string `json:"stop_reason"`
 	} `json:"choices"`
-	Usage Usage `json:"usage"`
+	StopReason string `json:"stop_reason"`
+	DoneReason string `json:"done_reason"`
+	Usage      Usage  `json:"usage"`
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
