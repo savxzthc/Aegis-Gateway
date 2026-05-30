@@ -42,7 +42,12 @@ func (s *Server) Logs(w http.ResponseWriter, r *http.Request) {
 		writePrivateError(w, r, http.StatusInternalServerError, "log query failed", "LOG_QUERY_FAILED", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, logsResponse{Data: logs, Limit: limit, Offset: offset})
+	total, err := s.DB.CountRequestLogs(r.Context())
+	if err != nil {
+		writePrivateError(w, r, http.StatusInternalServerError, "log query failed", "LOG_QUERY_FAILED", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, logsResponse{Data: logs, Limit: limit, Offset: offset, Total: total})
 }
 
 // GetConfig handles GET /v1/config.
@@ -75,6 +80,7 @@ func (s *Server) PatchConfig(w http.ResponseWriter, r *http.Request) {
 	restartRequired := patch.Port != nil && *patch.Port != previous.Server.Port
 	s.BackendsMu.Lock()
 	s.Backends["ollama"] = backends.NewOllamaBackend(cfg.Backend.OllamaBaseURL)
+	s.Backends["llamacpp"] = backends.NewLlamaCppBackend(cfg.Backend.LlamaCppBaseURL)
 	s.BackendsMu.Unlock()
 	writeJSON(w, http.StatusOK, configResponse{
 		Config: cfg,
@@ -103,6 +109,7 @@ type logsResponse struct {
 	Data   []db.RequestLog `json:"data"`
 	Limit  int             `json:"limit"`
 	Offset int             `json:"offset"`
+	Total  int64           `json:"total"`
 }
 
 type configResponse struct {

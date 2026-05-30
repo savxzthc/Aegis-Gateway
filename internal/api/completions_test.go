@@ -46,15 +46,15 @@ func TestValidateChatRequestAcceptsDeveloperAndContentParts(t *testing.T) {
 	}
 }
 
-func TestValidateSamplingRejectsUnsupportedN(t *testing.T) {
+func TestValidateSamplingAllowsNForSingleCompletionCompatibility(t *testing.T) {
 	n := 2
 	req := &backends.ChatRequest{
 		Model:    "llama3:8b",
 		Messages: []backends.ChatMessage{{Role: "user", Content: backends.NewMessageContent("hello")}},
 		N:        &n,
 	}
-	if err := validateChatRequest(req); err == nil {
-		t.Fatal("expected unsupported n error")
+	if err := validateChatRequest(req); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -96,5 +96,15 @@ func TestRouteErrorCodeUsesSentinels(t *testing.T) {
 	}
 	if code := routeErrorCode(errors.New("other")); code != "NO_MODEL_FITS" {
 		t.Fatalf("got %s", code)
+	}
+}
+
+func TestCompletionFinishReasonUsesLengthAtMaxTokens(t *testing.T) {
+	maxTokens := 4
+	if got := completionFinishReason(&maxTokens, 4); got != "length" {
+		t.Fatalf("finish reason = %q", got)
+	}
+	if got := completionFinishReason(&maxTokens, 3); got != "stop" {
+		t.Fatalf("finish reason = %q", got)
 	}
 }

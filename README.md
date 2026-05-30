@@ -81,6 +81,8 @@ Every API response includes `X-Request-Id` and `X-Aegis-Version` so local client
 | `/healthz` | GET | No | Local process health check |
 | `/readyz` | GET | No | Readiness check covering SQLite and embedded frontend assets |
 
+`/v1/completions` is implemented as a compatibility bridge over chat-capable local backends. Aegis wraps the legacy prompt as a single user message and supports only one completion per request; `n` values other than `1` are treated as `1`.
+
 ## config.toml Reference
 
 | Field | Type | Default | Description |
@@ -103,6 +105,8 @@ Every API response includes `X-Request-Id` and `X-Aegis-Version` so local client
 Every active API key is an admin key in the current release. Any valid key can create or revoke other keys, except Aegis prevents revoking the final active key to avoid lockout. Keep keys local and only share them with clients you trust.
 
 The default bind address is `0.0.0.0` for LAN access. Aegis prints a warning when it is reachable from other devices on the network; set `server.host = "127.0.0.1"` for loopback-only use.
+
+Aegis does not currently trust `X-Forwarded-For` or `X-Real-IP`. If you place it behind a reverse proxy, rate limits and auth-failure logs use the proxy connection address unless that proxy runs on the same machine and you add your own network controls.
 
 ## How VRAM Routing Works
 

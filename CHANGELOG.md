@@ -10,6 +10,7 @@
 - Added bounded HTTP write timeout for long-running streams.
 - Added single pull-job status endpoint at `/v1/models/pull/{model}`.
 - Added clearer startup backend output and LAN binding warnings.
+- Added token-cache eviction, request log totals, explicit frontend API timeouts, and llama.cpp backend refresh on config updates.
 
 ## v0.1.0
 

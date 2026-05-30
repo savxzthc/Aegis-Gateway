@@ -20,6 +20,11 @@ type contextKey string
 
 const keyIDContextKey contextKey = "aegis.key_id"
 
+const (
+	tokenCacheTTL      = 10 * time.Second
+	tokenCacheMaxItems = 4096
+)
+
 // Store captures database methods required by auth middleware.
 type Store interface {
 	ActiveKeySecrets(ctx context.Context) ([]db.APIKeySecret, error)
@@ -35,6 +40,7 @@ type Middleware struct {
 	nowFunc    func() time.Time
 	cacheMu    sync.RWMutex
 	tokenCache map[string]cachedToken
+	stopCache  chan struct{}
 }
 
 type cachedToken struct {
@@ -44,12 +50,24 @@ type cachedToken struct {
 
 // NewMiddleware creates chi-compatible auth middleware.
 func NewMiddleware(store Store, limiter *RateLimiter, rpmFunc func() int) *Middleware {
-	return &Middleware{
+	middleware := &Middleware{
 		store:      store,
 		limiter:    limiter,
 		rpmFunc:    rpmFunc,
 		nowFunc:    func() time.Time { return time.Now().UTC() },
 		tokenCache: map[string]cachedToken{},
+		stopCache:  make(chan struct{}),
+	}
+	go middleware.pruneTokenCacheLoop(time.Minute)
+	return middleware
+}
+
+// Stop stops background cache maintenance for tests or controlled shutdown.
+func (m *Middleware) Stop() {
+	select {
+	case <-m.stopCache:
+	default:
+		close(m.stopCache)
 	}
 }
 
@@ -73,7 +91,7 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 			}
 			keyID = matchKeyID(token, secrets)
 			if keyID != "" {
-				m.cacheKeyID(token, keyID, now.Add(10*time.Second))
+				m.cacheKeyID(token, keyID, now.Add(tokenCacheTTL))
 			}
 		}
 		if keyID == "" {
@@ -97,14 +115,13 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 }
 
 func matchKeyID(token string, secrets []db.APIKeySecret) string {
-	keyID := ""
 	for _, secret := range secrets {
 		candidate := HashKey(token, secret.Salt)
 		if subtle.ConstantTimeCompare([]byte(candidate), []byte(secret.Hash)) == 1 {
-			keyID = secret.ID
+			return secret.ID
 		}
 	}
-	return keyID
+	return ""
 }
 
 func (m *Middleware) cachedKeyID(token string, now time.Time) (string, bool) {
@@ -126,7 +143,36 @@ func (m *Middleware) cachedKeyID(token string, now time.Time) (string, bool) {
 func (m *Middleware) cacheKeyID(token, keyID string, expiresAt time.Time) {
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
+	if len(m.tokenCache) >= tokenCacheMaxItems {
+		m.pruneTokenCacheLocked(time.Now().UTC())
+	}
+	if len(m.tokenCache) >= tokenCacheMaxItems {
+		m.tokenCache = map[string]cachedToken{}
+	}
 	m.tokenCache[tokenCacheKey(token)] = cachedToken{keyID: keyID, expiresAt: expiresAt}
+}
+
+func (m *Middleware) pruneTokenCacheLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			m.cacheMu.Lock()
+			m.pruneTokenCacheLocked(time.Now().UTC())
+			m.cacheMu.Unlock()
+		case <-m.stopCache:
+			return
+		}
+	}
+}
+
+func (m *Middleware) pruneTokenCacheLocked(now time.Time) {
+	for key, cached := range m.tokenCache {
+		if !now.Before(cached.expiresAt) {
+			delete(m.tokenCache, key)
+		}
+	}
 }
 
 func tokenCacheKey(token string) string {

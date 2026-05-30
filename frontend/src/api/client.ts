@@ -102,6 +102,7 @@ export interface LogsResponse {
   data: RequestLog[];
   limit: number;
   offset: number;
+  total: number;
 }
 
 export interface APIKey {

@@ -1,3 +1,5 @@
+VERSION ?= 0.1.0
+
 .PHONY: dev frontend:dev frontend:build test audit verify build clean
 
 dev:
@@ -20,7 +22,7 @@ audit:
 verify: test audit
 
 build: frontend:build
-	go build -ldflags "-X main.buildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o aegis-gateway .
+	go build -ldflags "-X main.version=$(VERSION) -X main.buildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o aegis-gateway .
 
 clean:
 	rm -rf frontend/dist aegis-gateway aegis-gateway.exe

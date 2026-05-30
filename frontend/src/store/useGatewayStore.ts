@@ -46,6 +46,7 @@ interface GatewayState {
   logs: RequestLog[];
   logLimit: number;
   logOffset: number;
+  logTotal: number;
   keys: APIKey[];
   config: ConfigResponse | null;
   createdKey: CreateKeyResponse | null;
@@ -81,6 +82,7 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   logs: [],
   logLimit: 50,
   logOffset: 0,
+  logTotal: 0,
   keys: [],
   config: null,
   createdKey: null,
@@ -159,7 +161,7 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     await guard(set, async () => {
       const nextOffset = offset ?? get().logOffset;
       const res: LogsResponse = await getLogs(get().logLimit, nextOffset);
-      set({ logs: res.data, logLimit: res.limit, logOffset: res.offset, connected: true });
+      set({ logs: res.data, logLimit: res.limit, logOffset: res.offset, logTotal: res.total, connected: true });
     });
   },
   loadKeys: async () => {

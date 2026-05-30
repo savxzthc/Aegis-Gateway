@@ -349,6 +349,13 @@ func (s *Store) ListRequestLogs(ctx context.Context, limit, offset int) ([]Reque
 	return logs, rows.Err()
 }
 
+// CountRequestLogs returns the total number of request log rows.
+func (s *Store) CountRequestLogs(ctx context.Context) (int64, error) {
+	var total int64
+	err := s.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_logs`).Scan(&total)
+	return total, err
+}
+
 // GetStats returns aggregate dashboard statistics.
 func (s *Store) GetStats(ctx context.Context, now time.Time) (Stats, error) {
 	var stats Stats

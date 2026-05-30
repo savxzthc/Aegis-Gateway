@@ -240,6 +240,13 @@ func TestPruneOldMetadataRemovesExpiredRows(t *testing.T) {
 	if len(logs) != 1 || logs[0].ModelRequested != "new" {
 		t.Fatalf("unexpected retained logs: %#v", logs)
 	}
+	total, err := store.CountRequestLogs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("got %d request logs, want 1", total)
+	}
 	authFailures := countRows(t, store, `SELECT COUNT(*) FROM auth_failures`)
 	if authFailures != 1 {
 		t.Fatalf("got %d auth failures, want 1", authFailures)

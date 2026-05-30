@@ -101,7 +101,7 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if completionTokens == 0 {
 		completionTokens = estimateText(resp.Content)
 	}
-	writeJSON(w, status, newChatCompletionResponse(selected, resp.Content, promptTokens, completionTokens))
+	writeJSON(w, status, newChatCompletionResponse(selected, resp.Content, promptTokens, completionTokens, completionFinishReason(req.MaxTokens, completionTokens)))
 }
 
 // Completions handles POST /v1/completions.
@@ -151,6 +151,7 @@ func (s *Server) Completions(w http.ResponseWriter, r *http.Request) {
 	}
 	used = selected
 	fallback = didFallback
+	req.Model = selected
 	w.Header().Set("X-Aegis-Routed-Model", selected)
 	w.Header().Set("X-Aegis-Fallback", fmt.Sprintf("%t", didFallback))
 
@@ -199,7 +200,7 @@ func (s *Server) Completions(w http.ResponseWriter, r *http.Request) {
 	if completionTokens == 0 {
 		completionTokens = estimateText(resp.Content)
 	}
-	writeJSON(w, status, newCompletionResponse(selected, resp.Content, promptTokens, completionTokens))
+	writeJSON(w, status, newCompletionResponse(selected, resp.Content, promptTokens, completionTokens, completionFinishReason(req.MaxTokens, completionTokens)))
 }
 
 type streamResult struct {
@@ -255,7 +256,7 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend back
 	if isContextDone(r.Context()) {
 		return streamResult{Tokens: completionTokens, Status: 499}
 	}
-	finish := "stop"
+	finish := completionFinishReason(req.MaxTokens, completionTokens)
 	writeSSE(w, flusher, chatCompletionChunk{
 		ID:      id,
 		Object:  "chat.completion.chunk",
@@ -303,7 +304,7 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, backen
 	if isContextDone(r.Context()) {
 		return streamResult{Tokens: completionTokens, Status: 499}
 	}
-	finish := "stop"
+	finish := completionFinishReason(req.MaxTokens, completionTokens)
 	writeSSE(w, flusher, completionChunk{
 		ID:      id,
 		Object:  "text_completion",
@@ -330,7 +331,8 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, value interface{}) {
 
 func (s *Server) logRequest(ctx context.Context, started time.Time, keyID, requested, used string, fallback bool, backendType string, status int, promptTokens, completionTokens int) {
 	if keyID == "" {
-		return
+		log.Printf("aegis: request log missing authenticated key id")
+		keyID = "unknown"
 	}
 	if used == "" {
 		used = requested
@@ -412,10 +414,7 @@ func validateChatRequest(req *backends.ChatRequest) error {
 	return validateSampling(req.N, req.MaxTokens, req.Temperature, req.TopP, req.PresencePenalty, req.FrequencyPenalty)
 }
 
-func validateSampling(n *int, maxTokens *int, temperature, topP, presencePenalty, frequencyPenalty *float64) error {
-	if n != nil && *n != 1 {
-		return fmt.Errorf("n values other than 1 are not supported")
-	}
+func validateSampling(_ *int, maxTokens *int, temperature, topP, presencePenalty, frequencyPenalty *float64) error {
 	if maxTokens != nil && *maxTokens <= 0 {
 		return fmt.Errorf("max_tokens must be greater than zero")
 	}
@@ -512,7 +511,14 @@ type completionChoice struct {
 	FinishReason *string `json:"finish_reason,omitempty"`
 }
 
-func newChatCompletionResponse(model, content string, promptTokens, completionTokens int) chatCompletionResponse {
+func completionFinishReason(maxTokens *int, completionTokens int) string {
+	if maxTokens != nil && completionTokens >= *maxTokens {
+		return "length"
+	}
+	return "stop"
+}
+
+func newChatCompletionResponse(model, content string, promptTokens, completionTokens int, finishReason string) chatCompletionResponse {
 	return chatCompletionResponse{
 		ID:      responseID("chatcmpl"),
 		Object:  "chat.completion",
@@ -521,7 +527,7 @@ func newChatCompletionResponse(model, content string, promptTokens, completionTo
 		Choices: []chatChoice{{
 			Index:        0,
 			Message:      backends.ChatMessage{Role: "assistant", Content: backends.NewMessageContent(content)},
-			FinishReason: "stop",
+			FinishReason: finishReason,
 		}},
 		Usage: backends.Usage{
 			PromptTokens:     promptTokens,
@@ -531,8 +537,7 @@ func newChatCompletionResponse(model, content string, promptTokens, completionTo
 	}
 }
 
-func newCompletionResponse(model, content string, promptTokens, completionTokens int) completionResponse {
-	finish := "stop"
+func newCompletionResponse(model, content string, promptTokens, completionTokens int, finish string) completionResponse {
 	return completionResponse{
 		ID:      responseID("cmpl"),
 		Object:  "text_completion",

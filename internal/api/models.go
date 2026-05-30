@@ -14,6 +14,8 @@ import (
 	"github.com/savxzthc/aegis-gateway/internal/lifecycle"
 )
 
+var probeHTTPClient = &http.Client{Timeout: 3 * time.Second}
+
 // Models handles GET /v1/models.
 func (s *Server) Models(w http.ResponseWriter, r *http.Request) {
 	cfg := s.Config.Get()
@@ -28,7 +30,7 @@ func (s *Server) Models(w http.ResponseWriter, r *http.Request) {
 		data = append(data, modelObject{
 			ID:          name,
 			Object:      "model",
-			Created:     0,
+			Created:     s.StartedAt.Unix(),
 			OwnedBy:     "local",
 			VRAMGB:      modelCfg.VRAMGB,
 			Backend:     backend,
@@ -323,7 +325,7 @@ func ollamaLibraryReachable(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := probeHTTPClient.Do(req)
 	if err != nil {
 		return false
 	}

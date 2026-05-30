@@ -330,7 +330,7 @@ func commentedTOML(cfg Config) string {
 	fmt.Fprintf(&b, "host = %s\n", strconv.Quote(cfg.Server.Host))
 	fmt.Fprintf(&b, "port = %d\n", cfg.Server.Port)
 	fmt.Fprintln(&b, "# Minutes of inactivity before a loaded model is unloaded from VRAM.")
-	fmt.Fprintf(&b, "idle_timeout_minutes = %d\n\n", cfg.Server.IdleTimeoutMinutes)
+	fmt.Fprintf(&b, "idle_timeout_minutes = %d\n", cfg.Server.IdleTimeoutMinutes)
 	fmt.Fprintln(&b, "# Maximum seconds a model request may run before Aegis cancels it.")
 	fmt.Fprintf(&b, "request_timeout_seconds = %d\n\n", cfg.Server.RequestTimeoutSeconds)
 

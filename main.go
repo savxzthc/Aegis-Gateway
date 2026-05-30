@@ -37,6 +37,8 @@ var (
 	buildTime = "development"
 )
 
+var probeHTTPClient = &http.Client{Timeout: 3 * time.Second}
+
 func main() {
 	cfg, err := config.LoadManager("config.toml")
 	if err != nil {
@@ -99,7 +101,8 @@ func main() {
 		GoVersion: runtime.Version(),
 	}
 
-	authMiddleware := auth.NewMiddleware(store, auth.NewRateLimiter(), cfg.RateLimitRPM)
+	rateLimiter := auth.NewRateLimiter()
+	authMiddleware := auth.NewMiddleware(store, rateLimiter, cfg.RateLimitRPM)
 	apiHandler := api.NewRouter(app, authMiddleware.Handler)
 	handler, err := rootHandler(apiHandler, store)
 	if err != nil {
@@ -148,6 +151,8 @@ func main() {
 	if err := ollamaService.Shutdown(ollamaShutdownCtx); err != nil {
 		log.Printf("ollama shutdown: %v", err)
 	}
+	authMiddleware.Stop()
+	rateLimiter.Stop()
 }
 
 type gatewayListenInfo struct {
@@ -167,7 +172,8 @@ func openGatewayListener(cfg *config.Manager) (net.Listener, gatewayListenInfo, 
 	}
 
 	probeURL := probeURL(host, port)
-	if isOllamaRoot(probeURL) {
+	portHasOllama := isOllamaRoot(probeURL)
+	if portHasOllama {
 		info.Warnings = append(info.Warnings, fmt.Sprintf("Port %d is already serving Ollama; Aegis moved to the next free port.", port))
 		if current.Backend.OllamaBaseURL == config.Defaults().Backend.OllamaBaseURL {
 			info.OllamaBaseURL = strings.TrimRight(probeURL, "/")
@@ -188,7 +194,7 @@ func openGatewayListener(cfg *config.Manager) (net.Listener, gatewayListenInfo, 
 		return listener, info, nil
 	}
 
-	if isOllamaRoot(probeURL) {
+	if portHasOllama {
 		info.Warnings = append(info.Warnings, fmt.Sprintf("Port %d is already serving Ollama; Aegis moved to the next free port.", port))
 		if current.Backend.OllamaBaseURL == config.Defaults().Backend.OllamaBaseURL {
 			info.OllamaBaseURL = strings.TrimRight(probeURL, "/")
@@ -316,7 +322,7 @@ func isOllamaRoot(baseURL string) bool {
 	if err != nil {
 		return false
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := probeHTTPClient.Do(req)
 	if err != nil {
 		return false
 	}
@@ -527,11 +533,11 @@ func printBanner(url string, cfg config.Config, warnings []string) {
 
 func printInitialKey(key string) {
 	fmt.Println()
-	fmt.Println("+------------------------------------------------------------+")
-	fmt.Println("| Aegis Gateway initial API key                              |")
+	fmt.Println("+-------------------------------------------------------------+")
+	fmt.Println("| Aegis Gateway initial API key                               |")
 	fmt.Println("| Save this key now. It is stored hashed and shown only once. |")
-	fmt.Println("+------------------------------------------------------------+")
+	fmt.Println("+-------------------------------------------------------------+")
 	fmt.Printf("%s\n", key)
-	fmt.Println("+------------------------------------------------------------+")
+	fmt.Println("+-------------------------------------------------------------+")
 	fmt.Println()
 }

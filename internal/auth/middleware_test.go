@@ -115,6 +115,24 @@ func TestMiddlewareCachesValidatedBearerToken(t *testing.T) {
 	}
 }
 
+func TestTokenCachePrunesExpiredEntries(t *testing.T) {
+	mw := NewMiddleware(&authStoreStub{}, NewRateLimiter(), func() int { return 60 })
+	defer mw.Stop()
+	now := time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC)
+	mw.cacheKeyID("expired", "key_old", now.Add(-time.Second))
+	mw.cacheKeyID("fresh", "key_new", now.Add(time.Second))
+	mw.cacheMu.Lock()
+	mw.pruneTokenCacheLocked(now)
+	count := len(mw.tokenCache)
+	mw.cacheMu.Unlock()
+	if count != 1 {
+		t.Fatalf("cache count = %d, want 1", count)
+	}
+	if got, ok := mw.cachedKeyID("fresh", now); !ok || got != "key_new" {
+		t.Fatalf("fresh cache entry missing: got=%q ok=%v", got, ok)
+	}
+}
+
 func TestMiddlewareRejectsInvalidKeyWithoutLoggingSecret(t *testing.T) {
 	store := &authStoreStub{secrets: []db.APIKeySecret{{
 		ID:   "key_1",

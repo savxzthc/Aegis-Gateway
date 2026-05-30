@@ -6,6 +6,7 @@ export default function LogTable(): JSX.Element {
   const logs = useGatewayStore((state) => state.logs);
   const limit = useGatewayStore((state) => state.logLimit);
   const offset = useGatewayStore((state) => state.logOffset);
+  const total = useGatewayStore((state) => state.logTotal);
   const loadLogs = useGatewayStore((state) => state.loadLogs);
 
   useEffect(() => {
@@ -29,11 +30,14 @@ export default function LogTable(): JSX.Element {
             <ChevronLeft className="h-4 w-4" />
             Previous
           </button>
-          <button className="command-button" type="button" disabled={logs.length < limit} onClick={() => void loadLogs(next)}>
+          <button className="command-button" type="button" disabled={next >= total} onClick={() => void loadLogs(next)}>
             Next
             <ChevronRight className="h-4 w-4" />
           </button>
         </div>
+      </div>
+      <div className="border-b border-border px-4 py-2 font-mono text-xs text-muted">
+        Showing {logs.length === 0 ? 0 : offset + 1}-{Math.min(offset + logs.length, total)} of {total}
       </div>
 
       <div className="overflow-x-auto">
