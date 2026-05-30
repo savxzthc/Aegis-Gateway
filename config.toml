@@ -1,0 +1,42 @@
+[server]
+# The host and port Aegis listens on. 0.0.0.0 allows LAN access.
+host = "0.0.0.0"
+port = 9000
+# Minutes of inactivity before a loaded model is unloaded from VRAM.
+idle_timeout_minutes = 10
+# Maximum seconds a model request may run before Aegis cancels it.
+request_timeout_seconds = 300
+
+[security]
+# Maximum requests per minute per API key. 0 = unlimited.
+rate_limit_rpm = 60
+# Auto-generate a key on first boot if none exist.
+auto_generate_key = true
+
+[backend]
+# Default backend type: "ollama" or "llamacpp"
+default_type = "ollama"
+# Base URL of your Ollama instance.
+ollama_base_url = "http://127.0.0.1:11434"
+# Base URL of your llama.cpp server (if used).
+llamacpp_base_url = "http://127.0.0.1:8080"
+
+# Model registry. Add any model you want Aegis to know about.
+# vram_gb is the approximate VRAM this model uses when loaded at default quant.
+# backend overrides the default_type for this specific model.
+[models.registry]
+
+  [models.registry."llama3:8b"]
+  vram_gb = 5.5
+  backend = "ollama"
+  description = "Meta Llama 3 8B - fast, general purpose"
+
+  [models.registry."deepseek-coder:6.7b"]
+  vram_gb = 4.2
+  backend = "ollama"
+  description = "DeepSeek Coder 6.7B - optimized for code generation"
+
+  [models.registry."phi3:mini"]
+  vram_gb = 2.3
+  backend = "ollama"
+  description = "Phi-3 Mini - lightweight fallback for low VRAM"

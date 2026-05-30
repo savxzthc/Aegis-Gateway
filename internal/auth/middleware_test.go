@@ -1,0 +1,162 @@
+package auth
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/savxzthc/aegis-gateway/internal/db"
+)
+
+type authStoreStub struct {
+	secrets      []db.APIKeySecret
+	failures     int
+	usedKeyID    string
+	markUsedErr  error
+	failuresSeen []string
+}
+
+func (s *authStoreStub) ActiveKeySecrets(ctx context.Context) ([]db.APIKeySecret, error) {
+	return s.secrets, nil
+}
+
+func (s *authStoreStub) LogAuthFailure(ctx context.Context, ip string, at time.Time) error {
+	s.failures++
+	s.failuresSeen = append(s.failuresSeen, ip)
+	return nil
+}
+
+func (s *authStoreStub) MarkKeyUsed(ctx context.Context, id string, at time.Time) error {
+	s.usedKeyID = id
+	return s.markUsedErr
+}
+
+func TestMiddlewareAuthenticatesAndInjectsKeyID(t *testing.T) {
+	key := "secret"
+	salt := "salt"
+	store := &authStoreStub{secrets: []db.APIKeySecret{{
+		ID:   "key_1",
+		Salt: salt,
+		Hash: HashKey(key, salt),
+	}}}
+	mw := NewMiddleware(store, NewRateLimiter(), func() int { return 60 })
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := KeyIDFromContext(r.Context()); got != "key_1" {
+			t.Fatalf("got key id %q", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("got status %d body %s", res.Code, res.Body.String())
+	}
+	if store.usedKeyID != "key_1" || store.failures != 0 {
+		t.Fatalf("unexpected store state: %#v", store)
+	}
+}
+
+func TestMatchKeyIDScansAllSecrets(t *testing.T) {
+	key := "secret"
+	secrets := []db.APIKeySecret{
+		{ID: "key_1", Salt: "salt-1", Hash: HashKey("other", "salt-1")},
+		{ID: "key_2", Salt: "salt-2", Hash: HashKey(key, "salt-2")},
+		{ID: "key_3", Salt: "salt-3", Hash: HashKey("different", "salt-3")},
+	}
+
+	id, comparisons := matchKeyID(key, secrets)
+	if id != "key_2" {
+		t.Fatalf("got key id %q", id)
+	}
+	if comparisons != len(secrets) {
+		t.Fatalf("got %d comparisons, want %d", comparisons, len(secrets))
+	}
+}
+
+func TestMiddlewareRejectsInvalidKeyWithoutLoggingSecret(t *testing.T) {
+	store := &authStoreStub{secrets: []db.APIKeySecret{{
+		ID:   "key_1",
+		Salt: "salt",
+		Hash: HashKey("right", "salt"),
+	}}}
+	mw := NewMiddleware(store, NewRateLimiter(), func() int { return 60 })
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not run")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("Authorization", "Bearer wrong")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("got status %d", res.Code)
+	}
+	if store.failures != 1 || store.failuresSeen[0] != "127.0.0.1" {
+		t.Fatalf("unexpected failure logging: %#v", store)
+	}
+	if res.Body.String() == "" || strings.Contains(res.Body.String(), "wrong") {
+		t.Fatalf("response leaked key material: %s", res.Body.String())
+	}
+}
+
+func TestMiddlewareIgnoresForwardedForWhenLoggingFailures(t *testing.T) {
+	store := &authStoreStub{secrets: []db.APIKeySecret{{
+		ID:   "key_1",
+		Salt: "salt",
+		Hash: HashKey("right", "salt"),
+	}}}
+	mw := NewMiddleware(store, NewRateLimiter(), func() int { return 60 })
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not run")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.7")
+	req.Header.Set("Authorization", "Bearer wrong")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("got status %d", res.Code)
+	}
+	if store.failuresSeen[0] != "127.0.0.1" {
+		t.Fatalf("trusted forwarded IP: %#v", store.failuresSeen)
+	}
+}
+
+func TestMiddlewareRateLimitsPerKeyAndIP(t *testing.T) {
+	key := "secret"
+	salt := "salt"
+	store := &authStoreStub{secrets: []db.APIKeySecret{{
+		ID:   "key_1",
+		Salt: salt,
+		Hash: HashKey(key, salt),
+	}}}
+	mw := NewMiddleware(store, NewRateLimiter(), func() int { return 1 })
+	now := time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC)
+	mw.nowFunc = func() time.Time { return now }
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	for i, want := range []int{http.StatusNoContent, http.StatusTooManyRequests} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		req.Header.Set("Authorization", "Bearer "+key)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != want {
+			t.Fatalf("request %d got %d want %d", i, res.Code, want)
+		}
+	}
+}

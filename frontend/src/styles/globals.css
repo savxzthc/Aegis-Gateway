@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-base: #0d0f12;
+  --bg-surface: #161920;
+  --bg-elevated: #1e2128;
+  --border: #2a2d35;
+  --text-primary: #e8eaf0;
+  --text-muted: #6b7280;
+  --accent: #00d4aa;
+  --accent-dim: #00d4aa22;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+  --success: #22c55e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: 'DM Sans';
+  letter-spacing: 0;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::selection {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+.vram-progress {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+}
+
+.vram-progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: var(--bg-elevated);
+}
+
+.vram-progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.vram-progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+@layer components {
+  .panel {
+    @apply rounded-panel border border-border bg-surface;
+  }
+
+  .icon-button {
+    @apply inline-flex h-9 w-9 items-center justify-center rounded-panel border border-border bg-elevated text-primary transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .command-button {
+    @apply inline-flex h-9 items-center gap-2 rounded-panel border border-border bg-elevated px-3 text-sm font-medium text-primary transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .danger-button {
+    @apply inline-flex h-9 items-center gap-2 rounded-panel border border-danger bg-elevated px-3 text-sm font-medium text-danger transition hover:bg-base disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .field {
+    @apply h-10 rounded-panel border border-border bg-base px-3 text-sm text-primary outline-none transition placeholder:text-muted focus:border-accent;
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-medium;
+  }
+}

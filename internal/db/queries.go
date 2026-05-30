@@ -1,0 +1,441 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"time"
+)
+
+const (
+	requestLogRetention  = 30 * 24 * time.Hour
+	authFailureRetention = 7 * 24 * time.Hour
+	metadataPruneEvery   = time.Hour
+	sqliteTimeLayout     = "2006-01-02T15:04:05.000000000Z"
+)
+
+// APIKeySecret contains stored hash material for active API keys.
+type APIKeySecret struct {
+	ID   string
+	Salt string
+	Hash string
+}
+
+// NewAPIKey contains fields required to store a generated key.
+type NewAPIKey struct {
+	ID        string
+	Label     string
+	Salt      string
+	Hash      string
+	CreatedAt time.Time
+}
+
+// APIKeyView is the dashboard-safe representation of an API key.
+type APIKeyView struct {
+	ID            string     `json:"id"`
+	Label         string     `json:"label"`
+	CreatedAt     time.Time  `json:"created_at"`
+	LastUsed      *time.Time `json:"last_used"`
+	RequestsTotal int64      `json:"requests_total"`
+}
+
+// RequestLog contains privacy-preserving request metadata.
+type RequestLog struct {
+	ID                        int64     `json:"id"`
+	Timestamp                 time.Time `json:"timestamp"`
+	KeyID                     string    `json:"key_id"`
+	ModelRequested            string    `json:"model_requested"`
+	ModelUsed                 string    `json:"model_used"`
+	FallbackTriggered         bool      `json:"fallback_triggered"`
+	BackendType               string    `json:"backend_type"`
+	LatencyMS                 int64     `json:"latency_ms"`
+	EstimatedPromptTokens     int       `json:"estimated_prompt_tokens"`
+	EstimatedCompletionTokens int       `json:"estimated_completion_tokens"`
+	StatusCode                int       `json:"status_code"`
+}
+
+// TopModelStat contains an aggregate request count by model.
+type TopModelStat struct {
+	Model string `json:"model"`
+	Count int64  `json:"count"`
+}
+
+// HourlyRequestStat contains an hourly request count.
+type HourlyRequestStat struct {
+	Hour  string `json:"hour"`
+	Count int64  `json:"count"`
+}
+
+// Stats contains aggregate request metadata for the dashboard.
+type Stats struct {
+	RequestsToday     int64               `json:"requests_today"`
+	RequestsYesterday int64               `json:"requests_yesterday"`
+	RequestsTotal     int64               `json:"requests_total"`
+	AvgLatencyMS      int64               `json:"avg_latency_ms"`
+	TopModels         []TopModelStat      `json:"top_models"`
+	FallbackRatePct   float64             `json:"fallback_rate_pct"`
+	RequestsPerHour   []HourlyRequestStat `json:"requests_per_hour"`
+}
+
+// CountActiveKeys returns the number of non-revoked API keys.
+func (s *Store) CountActiveKeys(ctx context.Context) (int, error) {
+	var count int
+	err := s.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL`).Scan(&count)
+	return count, err
+}
+
+// HealthCheck verifies that SQLite is reachable and responding.
+func (s *Store) HealthCheck(ctx context.Context) error {
+	var value int
+	return s.conn.QueryRowContext(ctx, `SELECT 1`).Scan(&value)
+}
+
+// CreateAPIKey stores a new hashed API key.
+func (s *Store) CreateAPIKey(ctx context.Context, key NewAPIKey) error {
+	_, err := s.conn.ExecContext(ctx, `
+		INSERT INTO api_keys (id, label, salt, hash, created_at, requests_total)
+		VALUES (?, ?, ?, ?, ?, 0)
+	`, key.ID, key.Label, key.Salt, key.Hash, formatTime(key.CreatedAt))
+	return err
+}
+
+// ActiveKeySecrets returns hash material for all active keys.
+func (s *Store) ActiveKeySecrets(ctx context.Context) ([]APIKeySecret, error) {
+	rows, err := s.conn.QueryContext(ctx, `
+		SELECT id, salt, hash
+		FROM api_keys
+		WHERE revoked_at IS NULL
+		ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var keys []APIKeySecret
+	for rows.Next() {
+		var key APIKeySecret
+		if err := rows.Scan(&key.ID, &key.Salt, &key.Hash); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+// ListAPIKeys returns dashboard-safe active API keys.
+func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKeyView, error) {
+	rows, err := s.conn.QueryContext(ctx, `
+		SELECT id, label, created_at, last_used, requests_total
+		FROM api_keys
+		WHERE revoked_at IS NULL
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var keys []APIKeyView
+	for rows.Next() {
+		var key APIKeyView
+		var created string
+		var last sql.NullString
+		if err := rows.Scan(&key.ID, &key.Label, &created, &last, &key.RequestsTotal); err != nil {
+			return nil, err
+		}
+		createdAt, err := parseTime(created)
+		if err != nil {
+			return nil, err
+		}
+		key.CreatedAt = createdAt
+		if last.Valid {
+			lastUsed, err := parseTime(last.String)
+			if err != nil {
+				return nil, err
+			}
+			key.LastUsed = &lastUsed
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+// MarkKeyUsed records successful key usage.
+func (s *Store) MarkKeyUsed(ctx context.Context, id string, at time.Time) error {
+	_, err := s.conn.ExecContext(ctx, `
+		UPDATE api_keys
+		SET last_used = ?, requests_total = requests_total + 1
+		WHERE id = ? AND revoked_at IS NULL
+	`, formatTime(at), id)
+	return err
+}
+
+// RevokeAPIKey revokes an active API key.
+func (s *Store) RevokeAPIKey(ctx context.Context, id string, at time.Time) (bool, error) {
+	res, err := s.conn.ExecContext(ctx, `
+		UPDATE api_keys
+		SET revoked_at = ?
+		WHERE id = ? AND revoked_at IS NULL
+	`, formatTime(at), id)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	return affected > 0, err
+}
+
+// RevokeAPIKeyIfNotLast revokes an active key unless it is the final active key.
+func (s *Store) RevokeAPIKeyIfNotLast(ctx context.Context, id string, at time.Time) (revoked bool, lastActive bool, err error) {
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, false, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var targetActive int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_keys WHERE id = ? AND revoked_at IS NULL`, id).Scan(&targetActive); err != nil {
+		return false, false, err
+	}
+	if targetActive == 0 {
+		if err = tx.Commit(); err != nil {
+			return false, false, err
+		}
+		return false, false, nil
+	}
+
+	var activeCount int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL`).Scan(&activeCount); err != nil {
+		return false, false, err
+	}
+	if activeCount <= 1 {
+		if err = tx.Commit(); err != nil {
+			return false, false, err
+		}
+		return false, true, nil
+	}
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE api_keys
+		SET revoked_at = ?
+		WHERE id = ? AND revoked_at IS NULL
+	`, formatTime(at), id)
+	if err != nil {
+		return false, false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, false, err
+	}
+	return affected > 0, false, nil
+}
+
+// LogAuthFailure records an unauthorized attempt without key material.
+func (s *Store) LogAuthFailure(ctx context.Context, ip string, at time.Time) error {
+	_, err := s.conn.ExecContext(ctx, `
+		INSERT INTO auth_failures (ip, timestamp)
+		VALUES (?, ?)
+	`, ip, formatTime(at))
+	if err != nil {
+		return err
+	}
+	return s.maybePruneOldMetadata(ctx, time.Now().UTC())
+}
+
+// InsertRequestLog stores privacy-preserving request metadata.
+func (s *Store) InsertRequestLog(ctx context.Context, log RequestLog) error {
+	_, err := s.conn.ExecContext(ctx, `
+		INSERT INTO request_logs (
+			timestamp, key_id, model_requested, model_used, fallback_triggered,
+			backend_type, latency_ms, estimated_prompt_tokens,
+			estimated_completion_tokens, status_code
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, formatTime(log.Timestamp), log.KeyID, log.ModelRequested, log.ModelUsed, boolInt(log.FallbackTriggered), log.BackendType, log.LatencyMS, log.EstimatedPromptTokens, log.EstimatedCompletionTokens, log.StatusCode)
+	if err != nil {
+		return err
+	}
+	return s.maybePruneOldMetadata(ctx, time.Now().UTC())
+}
+
+// PruneOldMetadata deletes expired audit metadata and auth failures.
+func (s *Store) PruneOldMetadata(ctx context.Context, now time.Time) error {
+	requestCutoff := now.UTC().Add(-requestLogRetention)
+	authCutoff := now.UTC().Add(-authFailureRetention)
+	if _, err := s.conn.ExecContext(ctx, `DELETE FROM request_logs WHERE timestamp < ?`, formatTime(requestCutoff)); err != nil {
+		return err
+	}
+	if _, err := s.conn.ExecContext(ctx, `DELETE FROM auth_failures WHERE timestamp < ?`, formatTime(authCutoff)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) maybePruneOldMetadata(ctx context.Context, now time.Time) error {
+	s.pruneMu.Lock()
+	defer s.pruneMu.Unlock()
+	if !s.lastMetadataPrune.IsZero() && now.Sub(s.lastMetadataPrune) < metadataPruneEvery {
+		return nil
+	}
+	if err := s.PruneOldMetadata(ctx, now); err != nil {
+		return err
+	}
+	s.lastMetadataPrune = now
+	return nil
+}
+
+// ListRequestLogs returns paginated request metadata.
+func (s *Store) ListRequestLogs(ctx context.Context, limit, offset int) ([]RequestLog, error) {
+	rows, err := s.conn.QueryContext(ctx, `
+		SELECT id, timestamp, key_id, model_requested, model_used, fallback_triggered,
+			backend_type, latency_ms, estimated_prompt_tokens, estimated_completion_tokens, status_code
+		FROM request_logs
+		ORDER BY timestamp DESC, id DESC
+		LIMIT ? OFFSET ?
+	`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []RequestLog
+	for rows.Next() {
+		var log RequestLog
+		var ts string
+		var fallback int
+		if err := rows.Scan(&log.ID, &ts, &log.KeyID, &log.ModelRequested, &log.ModelUsed, &fallback, &log.BackendType, &log.LatencyMS, &log.EstimatedPromptTokens, &log.EstimatedCompletionTokens, &log.StatusCode); err != nil {
+			return nil, err
+		}
+		parsed, err := parseTime(ts)
+		if err != nil {
+			return nil, err
+		}
+		log.Timestamp = parsed
+		log.FallbackTriggered = fallback == 1
+		logs = append(logs, log)
+	}
+	return logs, rows.Err()
+}
+
+// GetStats returns aggregate dashboard statistics.
+func (s *Store) GetStats(ctx context.Context, now time.Time) (Stats, error) {
+	var stats Stats
+	startToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	startYesterday := startToday.Add(-24 * time.Hour)
+	startTomorrow := startToday.Add(24 * time.Hour)
+
+	if err := s.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_logs WHERE timestamp >= ? AND timestamp < ?`, formatTime(startToday), formatTime(startTomorrow)).Scan(&stats.RequestsToday); err != nil {
+		return stats, err
+	}
+	if err := s.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_logs WHERE timestamp >= ? AND timestamp < ?`, formatTime(startYesterday), formatTime(startToday)).Scan(&stats.RequestsYesterday); err != nil {
+		return stats, err
+	}
+	var avgLatency float64
+	if err := s.conn.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(AVG(latency_ms), 0) FROM request_logs`).Scan(&stats.RequestsTotal, &avgLatency); err != nil {
+		return stats, err
+	}
+	stats.AvgLatencyMS = int64(avgLatency)
+	var fallbackCount int64
+	if err := s.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_logs WHERE fallback_triggered = 1`).Scan(&fallbackCount); err != nil {
+		return stats, err
+	}
+	if stats.RequestsTotal > 0 {
+		stats.FallbackRatePct = float64(fallbackCount) / float64(stats.RequestsTotal) * 100
+	}
+
+	top, err := s.topModels(ctx)
+	if err != nil {
+		return stats, err
+	}
+	stats.TopModels = top
+
+	hourly, err := s.hourlyRequests(ctx, now)
+	if err != nil {
+		return stats, err
+	}
+	stats.RequestsPerHour = hourly
+	return stats, nil
+}
+
+func (s *Store) topModels(ctx context.Context) ([]TopModelStat, error) {
+	rows, err := s.conn.QueryContext(ctx, `
+		SELECT model_used, COUNT(*) AS count
+		FROM request_logs
+		GROUP BY model_used
+		ORDER BY count DESC, model_used ASC
+		LIMIT 5
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []TopModelStat
+	for rows.Next() {
+		var item TopModelStat
+		if err := rows.Scan(&item.Model, &item.Count); err != nil {
+			return nil, err
+		}
+		stats = append(stats, item)
+	}
+	return stats, rows.Err()
+}
+
+func (s *Store) hourlyRequests(ctx context.Context, now time.Time) ([]HourlyRequestStat, error) {
+	start := now.UTC().Truncate(time.Hour).Add(-23 * time.Hour)
+	rows, err := s.conn.QueryContext(ctx, `
+		SELECT strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS hour, COUNT(*)
+		FROM request_logs
+		WHERE timestamp >= ?
+		GROUP BY hour
+	`, formatTime(start))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := map[string]int64{}
+	for rows.Next() {
+		var hour string
+		var count int64
+		if err := rows.Scan(&hour, &count); err != nil {
+			return nil, err
+		}
+		counts[hour] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]HourlyRequestStat, 0, 24)
+	for i := 0; i < 24; i++ {
+		hour := start.Add(time.Duration(i) * time.Hour).Format("2006-01-02T15:00:00Z")
+		out = append(out, HourlyRequestStat{Hour: hour, Count: counts[hour]})
+	}
+	return out, nil
+}
+
+func formatTime(t time.Time) string {
+	return t.UTC().Format(sqliteTimeLayout)
+}
+
+func parseTime(value string) (time.Time, error) {
+	parsed, err := time.Parse(sqliteTimeLayout, value)
+	if err == nil {
+		return parsed, nil
+	}
+	return time.Parse(time.RFC3339Nano, value)
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}

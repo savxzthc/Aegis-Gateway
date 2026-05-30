@@ -1,0 +1,13 @@
+/aegis-gateway
+/aegis-gateway.exe
+/aegis.db
+/aegis.db-*
+/frontend/dist
+/frontend/node_modules
+/frontend/.vite
+coverage.out
+*.test
+*.log
+.env
+.env.*
+.DS_Store
