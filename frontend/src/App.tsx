@@ -1,5 +1,5 @@
 import { KeyRound, ShieldCheck } from 'lucide-react';
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { Component, ErrorInfo, FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
 import ChatConsole from './components/ChatConsole';
 import Dashboard from './components/Dashboard';
@@ -22,6 +22,14 @@ const titles: Record<ViewKey, string> = {
 };
 
 export default function App(): JSX.Element {
+  return (
+    <AppErrorBoundary>
+      <AppContent />
+    </AppErrorBoundary>
+  );
+}
+
+function AppContent(): JSX.Element {
   const [view, setView] = useState<ViewKey>('chat');
   const [inputToken, setInputToken] = useState('');
   const token = useGatewayStore((state) => state.token);
@@ -128,4 +136,48 @@ export default function App(): JSX.Element {
       </Layout>
     </>
   );
+}
+
+class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): { error: Error } {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    console.error('Aegis dashboard render failed', error, info.componentStack);
+  }
+
+  render(): ReactNode {
+    if (this.state.error) {
+      return (
+        <div className="flex min-h-screen items-center justify-center bg-base p-6 text-primary">
+          <div className="panel w-full max-w-[520px] p-6">
+            <div className="mb-2 text-xl font-bold">Aegis Dashboard</div>
+            <p className="text-sm leading-6 text-muted">
+              The dashboard hit a local browser-state error. Clear the saved key and reload, then paste your current API key again.
+            </p>
+            <code className="mt-4 block break-all rounded-panel border border-border bg-base p-3 font-mono text-xs text-danger">
+              {this.state.error.message}
+            </code>
+            <button
+              className="command-button mt-5"
+              type="button"
+              onClick={() => {
+                window.localStorage.removeItem('aegis_api_key');
+                window.location.reload();
+              }}
+            >
+              Clear saved key and reload
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }

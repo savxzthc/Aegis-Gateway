@@ -229,6 +229,9 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKeyView, error) {
 		if err != nil {
 			return nil, err
 		}
+		if models == nil {
+			models = []string{}
+		}
 		keys[i].AllowedModels = models
 	}
 	return keys, nil
@@ -254,7 +257,13 @@ func (s *Store) APIKeyAllowedModels(ctx context.Context, id string) ([]string, e
 		}
 		models = append(models, model)
 	}
-	return models, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if models == nil {
+		models = []string{}
+	}
+	return models, nil
 }
 
 // SetAPIKeyAllowedModels replaces the model allowlist for a key. An empty list allows all models.

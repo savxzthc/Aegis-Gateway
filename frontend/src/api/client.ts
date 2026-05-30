@@ -355,7 +355,7 @@ export async function getHardware(): Promise<HardwareInfo> {
 
 export async function getModels(): Promise<ModelInfo[]> {
   const res = await client.get<ModelListResponse>('/models', { timeout: 30000 });
-  return res.data.data;
+  return arrayOrEmpty(res.data.data);
 }
 
 export async function getModelCatalog(category: CatalogCategory, limit: number, offset: number): Promise<ModelCatalogResponse> {
@@ -363,7 +363,7 @@ export async function getModelCatalog(category: CatalogCategory, limit: number, 
     params: { category, limit, offset },
     timeout: 10000,
   });
-  return res.data;
+  return { ...res.data, data: arrayOrEmpty(res.data.data) };
 }
 
 export async function pullModel(model: string): Promise<PullJob> {
@@ -378,17 +378,21 @@ export async function getPullJob(model: string): Promise<PullJob> {
 
 export async function getStats(): Promise<StatsResponse> {
   const res = await client.get<StatsResponse>('/stats', { timeout: 30000 });
-  return res.data;
+  return {
+    ...res.data,
+    top_models: arrayOrEmpty(res.data.top_models),
+    requests_per_hour: arrayOrEmpty(res.data.requests_per_hour),
+  };
 }
 
 export async function getLogs(limit: number, offset: number): Promise<LogsResponse> {
   const res = await client.get<LogsResponse>('/logs', { params: { limit, offset }, timeout: 30000 });
-  return res.data;
+  return { ...res.data, data: arrayOrEmpty(res.data.data) };
 }
 
 export async function getKeys(): Promise<APIKey[]> {
   const res = await client.get<KeysResponse>('/keys', { timeout: 30000 });
-  return res.data.data;
+  return normalizeKeys(res.data.data);
 }
 
 export async function createKey(label: string, allowedModels: string[]): Promise<CreateKeyResponse> {
@@ -406,12 +410,12 @@ export async function updateKeyModels(id: string, allowedModels: string[]): Prom
     { allowed_models: allowedModels },
     { timeout: 30000 },
   );
-  return res.data.data;
+  return normalizeKeys(res.data.data);
 }
 
 export async function getTemplates(): Promise<PromptTemplate[]> {
   const res = await client.get<TemplatesResponse>('/templates', { timeout: 30000 });
-  return res.data.data;
+  return arrayOrEmpty(res.data.data);
 }
 
 export async function createTemplate(payload: TemplatePayload): Promise<PromptTemplate> {
@@ -545,6 +549,17 @@ function estimateText(value: string): number {
     return 0;
   }
   return Math.max(1, Math.ceil(Array.from(trimmed).length / 4));
+}
+
+function arrayOrEmpty<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeKeys(value: APIKey[] | null | undefined): APIKey[] {
+  return arrayOrEmpty(value).map((key) => ({
+    ...key,
+    allowed_models: arrayOrEmpty(key.allowed_models),
+  }));
 }
 
 async function readAPIError(response: Response): Promise<GatewayAPIError> {

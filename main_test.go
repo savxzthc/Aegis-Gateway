@@ -91,6 +91,22 @@ func TestRootHandlerAddsVersionHeader(t *testing.T) {
 	}
 }
 
+func TestRootHandlerAllowsDataFontAssets(t *testing.T) {
+	handler, err := rootHandler(http.NotFoundHandler(), readyStoreStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	csp := res.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "font-src 'self' data:") {
+		t.Fatalf("CSP does not allow bundled font data URLs: %q", csp)
+	}
+}
+
 func TestRootHandlerDoesNotCacheIndex(t *testing.T) {
 	handler, err := rootHandler(http.NotFoundHandler(), readyStoreStub{})
 	if err != nil {

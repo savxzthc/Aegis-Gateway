@@ -22,6 +22,9 @@ func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
 		writePrivateError(w, r, http.StatusInternalServerError, "template query failed", "TEMPLATE_QUERY_FAILED", err)
 		return
 	}
+	if templates == nil {
+		templates = []db.PromptTemplate{}
+	}
 	writeJSON(w, http.StatusOK, templatesResponse{Data: templates})
 }
 

@@ -18,6 +18,12 @@ func (s *Server) Stats(w http.ResponseWriter, r *http.Request) {
 		writePrivateError(w, r, http.StatusInternalServerError, "stats query failed", "STATS_QUERY_FAILED", err)
 		return
 	}
+	if stats.TopModels == nil {
+		stats.TopModels = []db.TopModelStat{}
+	}
+	if stats.RequestsPerHour == nil {
+		stats.RequestsPerHour = []db.HourlyRequestStat{}
+	}
 	writeJSON(w, http.StatusOK, statsResponse{
 		RequestsToday:     stats.RequestsToday,
 		RequestsYesterday: stats.RequestsYesterday,
@@ -41,6 +47,9 @@ func (s *Server) Logs(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writePrivateError(w, r, http.StatusInternalServerError, "log query failed", "LOG_QUERY_FAILED", err)
 		return
+	}
+	if logs == nil {
+		logs = []db.RequestLog{}
 	}
 	writeJSON(w, http.StatusOK, logsResponse{Data: logs, Limit: limit, Offset: offset, Total: total})
 }

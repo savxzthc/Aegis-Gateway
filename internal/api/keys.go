@@ -19,6 +19,7 @@ func (s *Server) ListKeys(w http.ResponseWriter, r *http.Request) {
 		writePrivateError(w, r, http.StatusInternalServerError, "key query failed", "KEY_QUERY_FAILED", err)
 		return
 	}
+	normalizeKeyViews(keys)
 	writeJSON(w, http.StatusOK, keysResponse{Data: keys})
 }
 
@@ -109,6 +110,7 @@ func (s *Server) UpdateKeyModels(w http.ResponseWriter, r *http.Request) {
 		writePrivateError(w, r, http.StatusInternalServerError, "key query failed", "KEY_QUERY_FAILED", err)
 		return
 	}
+	normalizeKeyViews(keys)
 	writeJSON(w, http.StatusOK, keysResponse{Data: keys})
 }
 
@@ -149,6 +151,14 @@ type createKeyResponse struct {
 	Label     string    `json:"label"`
 	CreatedAt time.Time `json:"created_at"`
 	Key       string    `json:"key"`
+}
+
+func normalizeKeyViews(keys []db.APIKeyView) {
+	for i := range keys {
+		if keys[i].AllowedModels == nil {
+			keys[i].AllowedModels = []string{}
+		}
+	}
 }
 
 func (s *Server) validModelAllowlist(models []string) ([]string, error) {
