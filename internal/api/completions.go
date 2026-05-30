@@ -55,6 +55,15 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err.Error(), "INVALID_REQUEST")
 		return
 	}
+	if ok, err := s.DB.KeyAllowsModel(r.Context(), keyID, req.Model); err != nil {
+		status = http.StatusInternalServerError
+		writePrivateError(w, r, status, "model ACL check failed", "MODEL_ACL_CHECK_FAILED", err)
+		return
+	} else if !ok {
+		status = http.StatusForbidden
+		writeError(w, status, "API key is not allowed to use this model", "MODEL_NOT_ALLOWED")
+		return
+	}
 
 	selected, didFallback, err := s.VRAMRouter.SelectModel(r.Context(), req.Model)
 	if err != nil {
@@ -137,6 +146,15 @@ func (s *Server) Completions(w http.ResponseWriter, r *http.Request) {
 	if req.Model == "" || req.Prompt.Empty() {
 		status = http.StatusBadRequest
 		writeError(w, status, "model and prompt are required", "INVALID_REQUEST")
+		return
+	}
+	if ok, err := s.DB.KeyAllowsModel(r.Context(), keyID, req.Model); err != nil {
+		status = http.StatusInternalServerError
+		writePrivateError(w, r, status, "model ACL check failed", "MODEL_ACL_CHECK_FAILED", err)
+		return
+	} else if !ok {
+		status = http.StatusForbidden
+		writeError(w, status, "API key is not allowed to use this model", "MODEL_NOT_ALLOWED")
 		return
 	}
 	if err := validateSampling(req.N, req.MaxTokens, req.Temperature, req.TopP, req.PresencePenalty, req.FrequencyPenalty); err != nil {

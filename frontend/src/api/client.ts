@@ -111,6 +111,7 @@ export interface APIKey {
   created_at: string;
   last_used: string | null;
   requests_total: number;
+  allowed_models: string[];
 }
 
 export interface KeysResponse {
@@ -122,6 +123,27 @@ export interface CreateKeyResponse {
   label: string;
   created_at: string;
   key: string;
+}
+
+export interface PromptTemplate {
+  id: string;
+  name: string;
+  system_prompt: string;
+  prompt: string;
+  model: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TemplatesResponse {
+  data: PromptTemplate[];
+}
+
+export interface TemplatePayload {
+  name: string;
+  system_prompt: string;
+  prompt: string;
+  model: string;
 }
 
 export interface ModelRegistryEntry {
@@ -214,6 +236,7 @@ export interface ChatCompletionChunk {
   object: 'chat.completion.chunk';
   created: number;
   model: string;
+  usage?: ChatCompletionResponse['usage'];
   choices: Array<{
     index: number;
     delta: Partial<ChatMessage>;
@@ -269,6 +292,8 @@ export function gatewayErrorMessage(error: unknown): string {
         return 'The local model runner did not complete the request. Make sure Ollama is running and the selected model is installed.';
       case 'MODEL_NOT_REGISTERED':
         return 'That model is not registered in config.toml. Add it to the model registry, then restart Aegis.';
+      case 'MODEL_NOT_ALLOWED':
+        return 'This API key is not allowed to use that model. Update the key allowlist in Keys.';
       case 'MODEL_NOT_IN_CATALOG':
         return 'That model is not available in the Aegis download catalog.';
       case 'MODEL_LIBRARY_OFFLINE':
@@ -288,7 +313,13 @@ export function gatewayErrorMessage(error: unknown): string {
       case 'KEY_GENERATION_FAILED':
       case 'KEY_CREATE_FAILED':
       case 'KEY_REVOKE_FAILED':
+      case 'KEY_ACL_UPDATE_FAILED':
         return 'Aegis could not update API keys. Try again, then check the local terminal log if it repeats.';
+      case 'TEMPLATE_QUERY_FAILED':
+      case 'TEMPLATE_CREATE_FAILED':
+      case 'TEMPLATE_UPDATE_FAILED':
+      case 'TEMPLATE_DELETE_FAILED':
+        return 'Aegis could not update prompt templates. Try again, then check the local terminal log if it repeats.';
       case 'RATE_LIMITED':
         return 'This API key is being rate limited. Wait a minute or raise the local rate limit in Settings.';
       case 'UNAUTHORIZED':
@@ -358,13 +389,41 @@ export async function getKeys(): Promise<APIKey[]> {
   return res.data.data;
 }
 
-export async function createKey(label: string): Promise<CreateKeyResponse> {
-  const res = await client.post<CreateKeyResponse>('/keys', { label }, { timeout: 30000 });
+export async function createKey(label: string, allowedModels: string[]): Promise<CreateKeyResponse> {
+  const res = await client.post<CreateKeyResponse>('/keys', { label, allowed_models: allowedModels }, { timeout: 30000 });
   return res.data;
 }
 
 export async function revokeKey(id: string): Promise<void> {
   await client.delete(`/keys/${encodeURIComponent(id)}`, { timeout: 30000 });
+}
+
+export async function updateKeyModels(id: string, allowedModels: string[]): Promise<APIKey[]> {
+  const res = await client.patch<KeysResponse>(
+    `/keys/${encodeURIComponent(id)}/models`,
+    { allowed_models: allowedModels },
+    { timeout: 30000 },
+  );
+  return res.data.data;
+}
+
+export async function getTemplates(): Promise<PromptTemplate[]> {
+  const res = await client.get<TemplatesResponse>('/templates', { timeout: 30000 });
+  return res.data.data;
+}
+
+export async function createTemplate(payload: TemplatePayload): Promise<PromptTemplate> {
+  const res = await client.post<PromptTemplate>('/templates', payload, { timeout: 30000 });
+  return res.data;
+}
+
+export async function updateTemplate(id: string, payload: TemplatePayload): Promise<PromptTemplate> {
+  const res = await client.patch<PromptTemplate>(`/templates/${encodeURIComponent(id)}`, payload, { timeout: 30000 });
+  return res.data;
+}
+
+export async function deleteTemplate(id: string): Promise<void> {
+  await client.delete(`/templates/${encodeURIComponent(id)}`, { timeout: 30000 });
 }
 
 export async function getConfig(): Promise<ConfigResponse> {
@@ -410,6 +469,7 @@ export async function streamChatCompletion(
       model,
       messages,
       stream: true,
+      stream_options: { include_usage: true },
     }),
   });
 
@@ -425,6 +485,7 @@ export async function streamChatCompletion(
   let buffer = '';
   let content = '';
   const promptTokens = estimateMessages(messages);
+  let usage: ChatCompletionResponse['usage'] | null = null;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -452,18 +513,22 @@ export async function streamChatCompletion(
         content += token;
         onToken(token);
       }
+      if ('usage' in chunk && chunk.usage) {
+        usage = chunk.usage;
+      }
     }
   }
 
+  const estimatedCompletion = estimateText(content);
   return {
     content,
     model,
     routedModel: response.headers.get('X-Aegis-Routed-Model') ?? model,
     fallback: response.headers.get('X-Aegis-Fallback') === 'true',
-    usage: {
+    usage: usage ?? {
       prompt_tokens: promptTokens,
-      completion_tokens: estimateText(content),
-      total_tokens: promptTokens + estimateText(content),
+      completion_tokens: estimatedCompletion,
+      total_tokens: promptTokens + estimatedCompletion,
     },
   };
 }

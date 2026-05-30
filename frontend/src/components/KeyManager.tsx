@@ -1,25 +1,31 @@
-import { Check, Copy, KeyRound, Plus, Trash2 } from 'lucide-react';
+import { Check, Copy, KeyRound, Plus, ShieldCheck, Trash2 } from 'lucide-react';
 import { FormEvent, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useGatewayStore } from '../store/useGatewayStore';
 
 export default function KeyManager(): JSX.Element {
   const [label, setLabel] = useState('');
+  const [allowedModels, setAllowedModels] = useState<string[]>([]);
   const [copied, setCopied] = useState(false);
   const keys = useGatewayStore((state) => state.keys);
+  const models = useGatewayStore((state) => state.models);
   const createdKey = useGatewayStore((state) => state.createdKey);
   const loadKeys = useGatewayStore((state) => state.loadKeys);
+  const loadModels = useGatewayStore((state) => state.loadModels);
   const createAPIKey = useGatewayStore((state) => state.createAPIKey);
   const revokeAPIKey = useGatewayStore((state) => state.revokeAPIKey);
+  const saveKeyModels = useGatewayStore((state) => state.saveKeyModels);
 
   useEffect(() => {
     void loadKeys();
-  }, [loadKeys]);
+    void loadModels();
+  }, [loadKeys, loadModels]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    await createAPIKey(label);
+    await createAPIKey(label, allowedModels);
     setLabel('');
+    setAllowedModels([]);
     setCopied(false);
   };
 
@@ -51,6 +57,12 @@ export default function KeyManager(): JSX.Element {
             Create
           </button>
         </form>
+        <ModelACLPicker
+          className="mt-4"
+          models={models.map((model) => model.id)}
+          selected={allowedModels}
+          onChange={setAllowedModels}
+        />
         {createdKey && (
           <div className="mt-4 rounded-panel border border-accent bg-[var(--accent-dim)] p-4">
             <div className="mb-2 text-sm text-primary">New key for {createdKey.label}</div>
@@ -80,6 +92,7 @@ export default function KeyManager(): JSX.Element {
                 <th className="px-4 py-3 font-medium">Created</th>
                 <th className="px-4 py-3 font-medium">Last Used</th>
                 <th className="px-4 py-3 font-medium">Requests</th>
+                <th className="px-4 py-3 font-medium">Model Access</th>
                 <th className="px-4 py-3 font-medium">Action</th>
               </tr>
             </thead>
@@ -93,6 +106,13 @@ export default function KeyManager(): JSX.Element {
                     {key.last_used ? new Date(key.last_used).toLocaleString() : 'Never'}
                   </td>
                   <td className="px-4 py-3 font-mono">{key.requests_total}</td>
+                  <td className="px-4 py-3">
+                    <KeyACLButton
+                      models={models.map((model) => model.id)}
+                      selected={key.allowed_models}
+                      onSave={(next) => void saveKeyModels(key.id, next)}
+                    />
+                  </td>
                   <td className="px-4 py-3">
                     <button
                       className="danger-button"
@@ -111,7 +131,7 @@ export default function KeyManager(): JSX.Element {
               ))}
               {keys.length === 0 && (
                 <tr>
-                  <td className="px-4 py-8 text-center text-muted" colSpan={6}>
+                  <td className="px-4 py-8 text-center text-muted" colSpan={7}>
                     No active keys.
                   </td>
                 </tr>
@@ -120,6 +140,97 @@ export default function KeyManager(): JSX.Element {
           </table>
         </div>
       </section>
+    </div>
+  );
+}
+
+function ModelACLPicker({
+  className = '',
+  models,
+  selected,
+  onChange,
+}: {
+  className?: string;
+  models: string[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}): JSX.Element {
+  const allModels = selected.length === 0;
+  const toggle = (model: string) => {
+    onChange(selected.includes(model) ? selected.filter((item) => item !== model) : [...selected, model].sort());
+  };
+  return (
+    <div className={className}>
+      <div className="mb-2 flex items-center gap-2 text-sm text-muted">
+        <ShieldCheck className="h-4 w-4 text-accent" />
+        <span>Allowed models</span>
+        <button className="ml-auto font-mono text-xs text-accent" type="button" onClick={() => onChange([])}>
+          Allow all
+        </button>
+      </div>
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+        {models.map((model) => (
+          <label key={model} className="flex items-center gap-2 rounded-panel border border-border bg-base px-3 py-2 font-mono text-xs text-muted">
+            <input
+              type="checkbox"
+              checked={allModels || selected.includes(model)}
+              onChange={() => toggle(model)}
+            />
+            <span className={allModels || selected.includes(model) ? 'text-primary' : ''}>{model}</span>
+          </label>
+        ))}
+      </div>
+      <div className="mt-2 font-mono text-xs text-muted">
+        {allModels ? 'Empty allowlist means this key can use every registered model.' : `${selected.length} model${selected.length === 1 ? '' : 's'} allowed.`}
+      </div>
+    </div>
+  );
+}
+
+function KeyACLButton({
+  models,
+  selected,
+  onSave,
+}: {
+  models: string[];
+  selected: string[];
+  onSave: (next: string[]) => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<string[]>(selected ?? []);
+  return (
+    <div className="min-w-[260px]">
+      <button
+        className="command-button h-8 px-3 text-xs"
+        type="button"
+        onClick={() => {
+          setDraft(selected ?? []);
+          setOpen((value) => !value);
+        }}
+      >
+        <ShieldCheck className="h-3.5 w-3.5" />
+        {selected.length === 0 ? 'All models' : `${selected.length} allowed`}
+      </button>
+      {open && (
+        <div className="mt-3 rounded-panel border border-border bg-surface p-3">
+          <ModelACLPicker models={models} selected={draft} onChange={setDraft} />
+          <div className="mt-3 flex justify-end gap-2">
+            <button className="icon-button h-8 px-3 text-xs" type="button" onClick={() => setOpen(false)}>
+              Cancel
+            </button>
+            <button
+              className="command-button h-8 px-3 text-xs"
+              type="button"
+              onClick={() => {
+                onSave(draft);
+                setOpen(false);
+              }}
+            >
+              Save
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

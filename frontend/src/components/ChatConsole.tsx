@@ -1,4 +1,4 @@
-import { Bot, Copy, Eraser, Loader2, Send, User } from 'lucide-react';
+import { Bot, Copy, Eraser, FileText, Loader2, Send, User } from 'lucide-react';
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { ChatMessage, GatewayAPIError, gatewayErrorMessage, streamChatCompletion } from '../api/client';
@@ -12,10 +12,13 @@ interface TranscriptMessage extends ChatMessage {
 
 export default function ChatConsole(): JSX.Element {
   const models = useGatewayStore((state) => state.models);
+  const templates = useGatewayStore((state) => state.templates);
   const clearToken = useGatewayStore((state) => state.clearToken);
   const loadModels = useGatewayStore((state) => state.loadModels);
+  const loadTemplates = useGatewayStore((state) => state.loadTemplates);
   const loadStats = useGatewayStore((state) => state.loadStats);
   const [selectedModel, setSelectedModel] = useState('');
+  const [selectedTemplate, setSelectedTemplate] = useState('');
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -24,7 +27,8 @@ export default function ChatConsole(): JSX.Element {
 
   useEffect(() => {
     void loadModels();
-  }, [loadModels]);
+    void loadTemplates();
+  }, [loadModels, loadTemplates]);
 
   useEffect(() => {
     if (!selectedModel && models.length > 0) {
@@ -55,6 +59,12 @@ export default function ChatConsole(): JSX.Element {
       content,
     };
     const nextMessages = [...messages, userMessage];
+    const template = templates.find((item) => item.id === selectedTemplate);
+    const requestMessages: ChatMessage[] = [
+      ...(template?.system_prompt ? [{ role: 'system' as const, content: template.system_prompt }] : []),
+      ...chatMessages,
+      { role: 'user' as const, content },
+    ];
     setMessages(nextMessages);
     setInput('');
     setSending(true);
@@ -73,7 +83,7 @@ export default function ChatConsole(): JSX.Element {
       ]);
       const result = await streamChatCompletion(
         selectedModel,
-        [...chatMessages, { role: 'user', content }],
+        requestMessages,
         (token) => {
           setMessages((current) =>
             current.map((message) =>
@@ -196,6 +206,35 @@ export default function ChatConsole(): JSX.Element {
             {models.map((model) => (
               <option key={model.id} value={model.id}>
                 {model.id}
+              </option>
+            ))}
+          </select>
+        </section>
+
+        <section className="panel p-4">
+          <label className="mb-2 flex items-center gap-2 text-sm text-muted" htmlFor="chat-template">
+            <FileText className="h-4 w-4 text-accent" />
+            Template
+          </label>
+          <select
+            id="chat-template"
+            className="field w-full"
+            value={selectedTemplate}
+            onChange={(event) => {
+              const template = templates.find((item) => item.id === event.target.value);
+              setSelectedTemplate(event.target.value);
+              if (template) {
+                setInput(template.prompt);
+                if (template.model) {
+                  setSelectedModel(template.model);
+                }
+              }
+            }}
+          >
+            <option value="">No template</option>
+            {templates.map((template) => (
+              <option key={template.id} value={template.id}>
+                {template.name}
               </option>
             ))}
           </select>

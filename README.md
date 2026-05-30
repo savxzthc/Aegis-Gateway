@@ -75,7 +75,12 @@ Every API response includes `X-Request-Id` and `X-Aegis-Version` so local client
 | `/v1/logs?limit=50&offset=0` | GET | Yes | Metadata-only audit log |
 | `/v1/keys` | GET | Yes | List active API keys |
 | `/v1/keys` | POST | Yes | Create a new API key |
+| `/v1/keys/{id}/models` | PATCH | Yes | Replace a key's model allowlist |
 | `/v1/keys/{id}` | DELETE | Yes | Revoke an API key |
+| `/v1/templates` | GET | Yes | List prompt templates |
+| `/v1/templates` | POST | Yes | Create a prompt template |
+| `/v1/templates/{id}` | PATCH | Yes | Update a prompt template |
+| `/v1/templates/{id}` | DELETE | Yes | Delete a prompt template |
 | `/v1/config` | GET | Yes | Read editable and runtime configuration |
 | `/v1/config` | PATCH | Yes | Update editable configuration values |
 | `/healthz` | GET | No | Local process health check |
@@ -105,6 +110,8 @@ For chat streaming, Aegis accepts `stream_options: {"include_usage": true}` and 
 ## Security Notes
 
 Every active API key is an admin key in the current release. Any valid key can create or revoke other keys, except Aegis prevents revoking the final active key to avoid lockout. Keep keys local and only share them with clients you trust.
+
+API keys can optionally have a model allowlist. Empty allowlists mean all registered models are allowed; non-empty allowlists reject disallowed model requests before VRAM routing.
 
 The default bind address is `0.0.0.0` for LAN access. Aegis prints a warning when it is reachable from other devices on the network; set `server.host = "127.0.0.1"` for loopback-only use.
 
@@ -140,8 +147,8 @@ go build -o aegis-gateway .
 - [ ] Discord bot integration
 - [ ] Windows system tray launcher
 - [ ] Multi-GPU support
-- [ ] Per-key model ACLs (whitelist which models a key can access)
-- [ ] Prompt template library (stored in SQLite, selectable per request)
+- [x] Per-key model ACLs (whitelist which models a key can access)
+- [x] Prompt template library (stored in SQLite, selectable per request)
 
 ## License
 

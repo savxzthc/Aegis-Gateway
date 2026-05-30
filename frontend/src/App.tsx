@@ -8,12 +8,14 @@ import Layout, { ViewKey } from './components/Layout';
 import LogTable from './components/LogTable';
 import ModelList from './components/ModelList';
 import SettingsPanel from './components/SettingsPanel';
+import TemplateLibrary from './components/TemplateLibrary';
 import { useGatewayStore } from './store/useGatewayStore';
 
 const titles: Record<ViewKey, string> = {
   chat: 'Chat',
   dashboard: 'Dashboard',
   models: 'Models',
+  templates: 'Templates',
   logs: 'Audit Logs',
   keys: 'API Keys',
   settings: 'Settings',
@@ -33,6 +35,7 @@ export default function App(): JSX.Element {
   const loadHardware = useGatewayStore((state) => state.loadHardware);
   const loadModels = useGatewayStore((state) => state.loadModels);
   const loadConfig = useGatewayStore((state) => state.loadConfig);
+  const loadTemplates = useGatewayStore((state) => state.loadTemplates);
 
   useEffect(() => {
     if (!token) {
@@ -42,7 +45,8 @@ export default function App(): JSX.Element {
     void loadStats();
     void loadModels();
     void loadConfig();
-  }, [token, loadHardware, loadStats, loadModels, loadConfig]);
+    void loadTemplates();
+  }, [token, loadHardware, loadStats, loadModels, loadConfig, loadTemplates]);
 
   useEffect(() => {
     if (error) {
@@ -114,6 +118,7 @@ export default function App(): JSX.Element {
         {view === 'chat' && <ChatConsole />}
         {view === 'dashboard' && <Dashboard />}
         {view === 'models' && <ModelList />}
+        {view === 'templates' && <TemplateLibrary />}
         {view === 'logs' && <LogTable />}
         {view === 'keys' && <KeyManager />}
         {view === 'settings' && <SettingsPanel />}

@@ -13,6 +13,7 @@
 - Added token-cache eviction, request log totals, explicit frontend API timeouts, and llama.cpp backend refresh on config updates.
 - Hardened release metadata, completion finish reasons, log pagination, lifecycle load waiting, and unsupported multi-completion validation.
 - Added SSE shutdown cancellation, stricter auth-failure throttling, atomic config rewrites, JSON content lengths, stream usage support, and startup backend reachability warnings.
+- Added per-key model allowlists and a SQLite-backed prompt template library with dashboard controls.
 
 ## v0.1.0
 

@@ -1,7 +1,7 @@
-import { BarChart3, Cpu, KeyRound, ListTree, MessageSquare, ScrollText, Settings } from 'lucide-react';
+import { BarChart3, Cpu, FileText, KeyRound, ListTree, MessageSquare, ScrollText, Settings } from 'lucide-react';
 import { ReactNode } from 'react';
 
-export type ViewKey = 'chat' | 'dashboard' | 'models' | 'logs' | 'keys' | 'settings';
+export type ViewKey = 'chat' | 'dashboard' | 'models' | 'templates' | 'logs' | 'keys' | 'settings';
 
 interface LayoutProps {
   activeView: ViewKey;
@@ -21,6 +21,7 @@ const navItems: Array<{
   { key: 'chat', label: 'Chat', icon: MessageSquare },
   { key: 'dashboard', label: 'Dashboard', icon: BarChart3 },
   { key: 'models', label: 'Models', icon: ListTree },
+  { key: 'templates', label: 'Templates', icon: FileText },
   { key: 'logs', label: 'Logs', icon: ScrollText },
   { key: 'keys', label: 'Keys', icon: KeyRound },
   { key: 'settings', label: 'Settings', icon: Settings },

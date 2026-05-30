@@ -60,6 +60,13 @@ func (s *Store) Migrate(ctx context.Context) error {
 			requests_total INTEGER NOT NULL DEFAULT 0
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(revoked_at);`,
+		`CREATE TABLE IF NOT EXISTS api_key_model_acls (
+			key_id TEXT NOT NULL,
+			model_id TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (key_id, model_id)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_api_key_model_acls_key ON api_key_model_acls(key_id);`,
 		`CREATE TABLE IF NOT EXISTS request_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			timestamp TEXT NOT NULL,
@@ -80,6 +87,16 @@ func (s *Store) Migrate(ctx context.Context) error {
 			timestamp TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_auth_failures_timestamp ON auth_failures(timestamp);`,
+		`CREATE TABLE IF NOT EXISTS prompt_templates (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			system_prompt TEXT NOT NULL,
+			prompt TEXT NOT NULL,
+			model TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_prompt_templates_updated ON prompt_templates(updated_at);`,
 	}
 	for _, stmt := range statements {
 		if _, err := s.conn.ExecContext(ctx, stmt); err != nil {

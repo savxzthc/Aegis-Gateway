@@ -10,9 +10,13 @@ import {
   HardwareInfo,
   LogsResponse,
   ModelInfo,
+  PromptTemplate,
   RequestLog,
   StatsResponse,
+  TemplatePayload,
   createKey,
+  createTemplate,
+  deleteTemplate,
   gatewayErrorMessage,
   getConfig,
   getHardware,
@@ -21,10 +25,13 @@ import {
   getLogs,
   getModels,
   getStats,
+  getTemplates,
   patchConfig,
   pullModel,
   revokeKey,
   setAuthToken,
+  updateKeyModels,
+  updateTemplate,
 } from '../api/client';
 
 const storedToken = window.localStorage.getItem('aegis_api_key') ?? '';
@@ -48,6 +55,7 @@ interface GatewayState {
   logOffset: number;
   logTotal: number;
   keys: APIKey[];
+  templates: PromptTemplate[];
   config: ConfigResponse | null;
   createdKey: CreateKeyResponse | null;
   setToken: (token: string) => void;
@@ -60,9 +68,14 @@ interface GatewayState {
   loadStats: () => Promise<void>;
   loadLogs: (offset?: number) => Promise<void>;
   loadKeys: () => Promise<void>;
+  loadTemplates: () => Promise<void>;
   loadConfig: () => Promise<void>;
-  createAPIKey: (label: string) => Promise<void>;
+  createAPIKey: (label: string, allowedModels?: string[]) => Promise<void>;
   revokeAPIKey: (id: string) => Promise<void>;
+  saveKeyModels: (id: string, allowedModels: string[]) => Promise<void>;
+  createPromptTemplate: (payload: TemplatePayload) => Promise<void>;
+  updatePromptTemplate: (id: string, payload: TemplatePayload) => Promise<void>;
+  deletePromptTemplate: (id: string) => Promise<void>;
   saveConfig: (patch: ConfigPatch) => Promise<void>;
 }
 
@@ -84,6 +97,7 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   logOffset: 0,
   logTotal: 0,
   keys: [],
+  templates: [],
   config: null,
   createdKey: null,
   setToken: (token) => {
@@ -170,15 +184,21 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
       set({ keys, connected: true });
     });
   },
+  loadTemplates: async () => {
+    await guard(set, async () => {
+      const templates = await getTemplates();
+      set({ templates, connected: true });
+    });
+  },
   loadConfig: async () => {
     await guard(set, async () => {
       const config = await getConfig();
       set({ config, connected: true });
     });
   },
-  createAPIKey: async (label) => {
+  createAPIKey: async (label, allowedModels = []) => {
     await guard(set, async () => {
-      const createdKey = await createKey(label);
+      const createdKey = await createKey(label, allowedModels);
       const keys = await getKeys();
       set({ createdKey, keys, connected: true });
     });
@@ -188,6 +208,33 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
       await revokeKey(id);
       const keys = await getKeys();
       set({ keys, connected: true });
+    });
+  },
+  saveKeyModels: async (id, allowedModels) => {
+    await guard(set, async () => {
+      const keys = await updateKeyModels(id, allowedModels);
+      set({ keys, connected: true });
+    });
+  },
+  createPromptTemplate: async (payload) => {
+    await guard(set, async () => {
+      await createTemplate(payload);
+      const templates = await getTemplates();
+      set({ templates, connected: true });
+    });
+  },
+  updatePromptTemplate: async (id, payload) => {
+    await guard(set, async () => {
+      await updateTemplate(id, payload);
+      const templates = await getTemplates();
+      set({ templates, connected: true });
+    });
+  },
+  deletePromptTemplate: async (id) => {
+    await guard(set, async () => {
+      await deleteTemplate(id);
+      const templates = await getTemplates();
+      set({ templates, connected: true });
     });
   },
   saveConfig: async (patch) => {

@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -37,6 +38,7 @@ type APIKeyView struct {
 	CreatedAt     time.Time  `json:"created_at"`
 	LastUsed      *time.Time `json:"last_used"`
 	RequestsTotal int64      `json:"requests_total"`
+	AllowedModels []string   `json:"allowed_models"`
 }
 
 // RequestLog contains privacy-preserving request metadata.
@@ -75,6 +77,17 @@ type Stats struct {
 	TopModels         []TopModelStat      `json:"top_models"`
 	FallbackRatePct   float64             `json:"fallback_rate_pct"`
 	RequestsPerHour   []HourlyRequestStat `json:"requests_per_hour"`
+}
+
+// PromptTemplate contains a reusable local prompt stored in SQLite.
+type PromptTemplate struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	SystemPrompt string    `json:"system_prompt"`
+	Prompt       string    `json:"prompt"`
+	Model        string    `json:"model"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // CountActiveKeys returns the number of non-revoked API keys.
@@ -177,7 +190,92 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKeyView, error) {
 		}
 		keys = append(keys, key)
 	}
-	return keys, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range keys {
+		models, err := s.APIKeyAllowedModels(ctx, keys[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		keys[i].AllowedModels = models
+	}
+	return keys, nil
+}
+
+// APIKeyAllowedModels returns the model allowlist for a key. An empty list means all registered models are allowed.
+func (s *Store) APIKeyAllowedModels(ctx context.Context, id string) ([]string, error) {
+	rows, err := s.conn.QueryContext(ctx, `
+		SELECT model_id
+		FROM api_key_model_acls
+		WHERE key_id = ?
+		ORDER BY model_id ASC
+	`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var models []string
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			return nil, err
+		}
+		models = append(models, model)
+	}
+	return models, rows.Err()
+}
+
+// SetAPIKeyAllowedModels replaces the model allowlist for a key. An empty list allows all models.
+func (s *Store) SetAPIKeyAllowedModels(ctx context.Context, id string, models []string, at time.Time) (bool, error) {
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	var active int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_keys WHERE id = ? AND revoked_at IS NULL`, id).Scan(&active); err != nil {
+		return false, err
+	}
+	if active == 0 {
+		if err = tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM api_key_model_acls WHERE key_id = ?`, id); err != nil {
+		return false, err
+	}
+	for _, model := range models {
+		if _, err = tx.ExecContext(ctx, `
+			INSERT INTO api_key_model_acls (key_id, model_id, created_at)
+			VALUES (?, ?, ?)
+		`, id, model, formatTime(at)); err != nil {
+			return false, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// KeyAllowsModel reports whether a key may use model. Keys with no explicit ACL allow every model.
+func (s *Store) KeyAllowsModel(ctx context.Context, id, model string) (bool, error) {
+	var total int
+	if err := s.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_key_model_acls WHERE key_id = ?`, id).Scan(&total); err != nil {
+		return false, err
+	}
+	if total == 0 {
+		return true, nil
+	}
+	var allowed int
+	err := s.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_key_model_acls WHERE key_id = ? AND model_id = ?`, id, model).Scan(&allowed)
+	return allowed > 0, err
 }
 
 // MarkKeyUsed records successful key usage.
@@ -260,6 +358,61 @@ func (s *Store) RevokeAPIKeyIfNotLast(ctx context.Context, id string, at time.Ti
 		s.invalidateActiveKeySecrets()
 	}
 	return affected > 0, false, nil
+}
+
+// ListPromptTemplates returns all reusable prompt templates.
+func (s *Store) ListPromptTemplates(ctx context.Context) ([]PromptTemplate, error) {
+	rows, err := s.conn.QueryContext(ctx, `
+		SELECT id, name, system_prompt, prompt, model, created_at, updated_at
+		FROM prompt_templates
+		ORDER BY updated_at DESC, name ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var templates []PromptTemplate
+	for rows.Next() {
+		template, err := scanPromptTemplate(rows)
+		if err != nil {
+			return nil, err
+		}
+		templates = append(templates, template)
+	}
+	return templates, rows.Err()
+}
+
+// CreatePromptTemplate stores a new prompt template.
+func (s *Store) CreatePromptTemplate(ctx context.Context, template PromptTemplate) error {
+	_, err := s.conn.ExecContext(ctx, `
+		INSERT INTO prompt_templates (id, name, system_prompt, prompt, model, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, template.ID, template.Name, template.SystemPrompt, template.Prompt, template.Model, formatTime(template.CreatedAt), formatTime(template.UpdatedAt))
+	return err
+}
+
+// UpdatePromptTemplate replaces editable prompt template fields.
+func (s *Store) UpdatePromptTemplate(ctx context.Context, template PromptTemplate) (bool, error) {
+	res, err := s.conn.ExecContext(ctx, `
+		UPDATE prompt_templates
+		SET name = ?, system_prompt = ?, prompt = ?, model = ?, updated_at = ?
+		WHERE id = ?
+	`, template.Name, template.SystemPrompt, template.Prompt, template.Model, formatTime(template.UpdatedAt), template.ID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	return affected > 0, err
+}
+
+// DeletePromptTemplate removes one prompt template.
+func (s *Store) DeletePromptTemplate(ctx context.Context, id string) (bool, error) {
+	res, err := s.conn.ExecContext(ctx, `DELETE FROM prompt_templates WHERE id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	return affected > 0, err
 }
 
 // LogAuthFailure records an unauthorized attempt without key material.
@@ -483,6 +636,47 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+type promptTemplateScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanPromptTemplate(scanner promptTemplateScanner) (PromptTemplate, error) {
+	var template PromptTemplate
+	var created string
+	var updated string
+	if err := scanner.Scan(&template.ID, &template.Name, &template.SystemPrompt, &template.Prompt, &template.Model, &created, &updated); err != nil {
+		return template, err
+	}
+	createdAt, err := parseTime(created)
+	if err != nil {
+		return template, err
+	}
+	updatedAt, err := parseTime(updated)
+	if err != nil {
+		return template, err
+	}
+	template.CreatedAt = createdAt
+	template.UpdatedAt = updatedAt
+	return template, nil
+}
+
+// PromptTemplateByID returns a single prompt template.
+func (s *Store) PromptTemplateByID(ctx context.Context, id string) (PromptTemplate, bool, error) {
+	row := s.conn.QueryRowContext(ctx, `
+		SELECT id, name, system_prompt, prompt, model, created_at, updated_at
+		FROM prompt_templates
+		WHERE id = ?
+	`, id)
+	template, err := scanPromptTemplate(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PromptTemplate{}, false, nil
+	}
+	if err != nil {
+		return PromptTemplate{}, false, err
+	}
+	return template, true, nil
 }
 
 func cloneAPIKeySecrets(in []APIKeySecret) []APIKeySecret {
