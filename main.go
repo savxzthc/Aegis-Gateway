@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -40,6 +41,9 @@ var (
 var probeHTTPClient = &http.Client{Timeout: 3 * time.Second}
 
 func main() {
+	resetAdminKey := flag.Bool("reset-admin-key", false, "revoke all active API keys, create one replacement key, print it once, and exit")
+	flag.Parse()
+
 	cfg, err := config.LoadManager("config.toml")
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -47,6 +51,29 @@ func main() {
 	startupWarnings, err := applyOllamaHostOverride(cfg)
 	if err != nil {
 		log.Fatalf("ollama host: %v", err)
+	}
+	store, err := db.Open("aegis.db")
+	if err != nil {
+		log.Fatalf("database: %v", err)
+	}
+	defer store.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := store.PruneOldMetadata(ctx, time.Now().UTC()); err != nil {
+		log.Fatalf("metadata retention: %v", err)
+	}
+	if *resetAdminKey {
+		raw, err := resetAdminAPIKey(ctx, store)
+		if err != nil {
+			log.Fatalf("reset admin key: %v", err)
+		}
+		printResetKey(raw)
+		return
+	}
+	activeKeyCount, err := ensureFirstKey(ctx, cfg, store)
+	if err != nil {
+		log.Fatalf("first key: %v", err)
 	}
 	listener, listenInfo, err := openGatewayListener(cfg)
 	if err != nil {
@@ -61,20 +88,6 @@ func main() {
 	}
 	if bindsAllInterfaces(cfg.Get().Server.Host) {
 		listenInfo.Warnings = append(listenInfo.Warnings, "Aegis is bound to all network interfaces; API keys may be sent over your LAN in plaintext unless you use a local-only host.")
-	}
-	store, err := db.Open("aegis.db")
-	if err != nil {
-		log.Fatalf("database: %v", err)
-	}
-	defer store.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := store.PruneOldMetadata(ctx, time.Now().UTC()); err != nil {
-		log.Fatalf("metadata retention: %v", err)
-	}
-	if err := ensureFirstKey(ctx, cfg, store); err != nil {
-		log.Fatalf("first key: %v", err)
 	}
 
 	gpu := hardware.NewNVIDIAProvider()
@@ -115,7 +128,7 @@ func main() {
 	}
 
 	current := cfg.Get()
-	printBanner(listenInfo.URL, current, listenInfo.Warnings)
+	printBanner(listenInfo.URL, current, listenInfo.Warnings, activeKeyCount)
 	server := &http.Server{
 		Addr:              listener.Addr().String(),
 		Handler:           handler,
@@ -397,40 +410,71 @@ func bindsAllInterfaces(host string) bool {
 	return trimmed == "" || trimmed == "0.0.0.0" || trimmed == "::"
 }
 
-func ensureFirstKey(ctx context.Context, cfg *config.Manager, store *db.Store) error {
+func ensureFirstKey(ctx context.Context, cfg *config.Manager, store *db.Store) (int, error) {
 	if !cfg.Get().Security.AutoGenerateKey {
-		return nil
+		return store.CountActiveKeys(ctx)
 	}
 	count, err := store.CountActiveKeys(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if count > 0 {
-		return nil
+		return count, nil
 	}
+	raw, _, err := createStoredAPIKey(ctx, store, "Initial local key")
+	if err != nil {
+		return 0, err
+	}
+	printInitialKey(raw)
+	return 1, nil
+}
+
+func createStoredAPIKey(ctx context.Context, store *db.Store, label string) (string, string, error) {
 	raw, err := auth.GenerateKey()
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	salt, err := auth.GenerateSalt()
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	id, err := auth.GenerateID("key")
 	if err != nil {
-		return err
+		return "", "", err
 	}
-	if err := store.CreateAPIKey(ctx, db.NewAPIKey{
+	return raw, id, store.CreateAPIKey(ctx, db.NewAPIKey{
 		ID:        id,
-		Label:     "Initial local key",
+		Label:     label,
 		Salt:      salt,
 		Hash:      auth.HashKey(raw, salt),
 		CreatedAt: time.Now().UTC(),
-	}); err != nil {
-		return err
+	})
+}
+
+func resetAdminAPIKey(ctx context.Context, store *db.Store) (string, error) {
+	raw, err := auth.GenerateKey()
+	if err != nil {
+		return "", err
 	}
-	printInitialKey(raw)
-	return nil
+	salt, err := auth.GenerateSalt()
+	if err != nil {
+		return "", err
+	}
+	id, err := auth.GenerateID("key")
+	if err != nil {
+		return "", err
+	}
+	now := time.Now().UTC()
+	if err := store.ResetAPIKeys(ctx, db.NewAPIKey{
+		ID:        id,
+		Label:     "Local recovery key",
+		Salt:      salt,
+		Hash:      auth.HashKey(raw, salt),
+		CreatedAt: now,
+	}, now); err != nil {
+		return "", err
+	}
+	return raw, nil
 }
 
 type readinessStore interface {
@@ -560,7 +604,7 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func printBanner(url string, cfg config.Config, warnings []string) {
+func printBanner(url string, cfg config.Config, warnings []string, activeKeyCount int) {
 	fmt.Println()
 	fmt.Println("Aegis Gateway")
 	fmt.Println("privacy-first local AI gateway")
@@ -570,6 +614,10 @@ func printBanner(url string, cfg config.Config, warnings []string) {
 	fmt.Printf("dashboard: %s\n", url)
 	fmt.Printf("version: %s\n", version)
 	fmt.Printf("build time: %s\n", buildTime)
+	fmt.Printf("active API keys: %d\n", activeKeyCount)
+	if activeKeyCount > 0 {
+		fmt.Println("key recovery: .\\aegis-gateway.exe --reset-admin-key")
+	}
 	fmt.Printf("default backend: %s\n", cfg.Backend.DefaultType)
 	fmt.Printf("ollama backend: %s\n", cfg.Backend.OllamaBaseURL)
 	fmt.Printf("llama.cpp backend: %s\n", cfg.Backend.LlamaCppBaseURL)
@@ -610,6 +658,17 @@ func printInitialKey(key string) {
 	fmt.Println("+-------------------------------------------------------------+")
 	fmt.Println("| Aegis Gateway initial API key                               |")
 	fmt.Println("| Save this key now. It is stored hashed and shown only once. |")
+	fmt.Println("+-------------------------------------------------------------+")
+	fmt.Printf("%s\n", key)
+	fmt.Println("+-------------------------------------------------------------+")
+	fmt.Println()
+}
+
+func printResetKey(key string) {
+	fmt.Println()
+	fmt.Println("+-------------------------------------------------------------+")
+	fmt.Println("| Aegis Gateway recovery API key                              |")
+	fmt.Println("| Previous active keys were revoked. Save this new key now.   |")
 	fmt.Println("+-------------------------------------------------------------+")
 	fmt.Printf("%s\n", key)
 	fmt.Println("+-------------------------------------------------------------+")

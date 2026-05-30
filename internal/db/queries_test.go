@@ -146,6 +146,47 @@ func TestRevokeAPIKeyIfNotLastPreventsLockout(t *testing.T) {
 	}
 }
 
+func TestResetAPIKeysRevokesExistingAndCreatesReplacement(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "aegis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	created := time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)
+	for _, id := range []string{"key_one", "key_two"} {
+		if err := store.CreateAPIKey(ctx, NewAPIKey{ID: id, Label: id, Salt: "salt", Hash: "hash", CreatedAt: created}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.ResetAPIKeys(ctx, NewAPIKey{
+		ID:        "key_recovery",
+		Label:     "Recovery",
+		Salt:      "salt2",
+		Hash:      "hash2",
+		CreatedAt: created.Add(time.Minute),
+	}, created.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	keys, err := store.ListAPIKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0].ID != "key_recovery" {
+		t.Fatalf("unexpected active keys: %#v", keys)
+	}
+	secrets, err := store.ActiveKeySecrets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secrets) != 1 || secrets[0].ID != "key_recovery" {
+		t.Fatalf("unexpected active secrets: %#v", secrets)
+	}
+}
+
 func TestActiveKeySecretsCacheInvalidatesOnKeyChanges(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(filepath.Join(t.TempDir(), "aegis.db"))

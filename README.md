@@ -44,6 +44,14 @@ go build -o aegis-gateway.exe .
 
 On first boot, Aegis prints one API key. Save it somewhere local; the raw key is never stored or printed again. Open the `dashboard:` URL printed in the terminal, paste the key, and use the Chat view to talk to registered models without writing code. The default dashboard URL is `http://127.0.0.1:9000`.
 
+If you lose the key or the browser has an old rejected key saved, stop Aegis and run:
+
+```powershell
+.\aegis-gateway.exe --reset-admin-key
+```
+
+That command revokes existing active keys, creates one replacement local admin key, prints it once, and exits. Start `.\aegis-gateway.exe` again, paste the new key into the dashboard, and continue normally.
+
 If Ollama is configured to use port `9000`, Aegis will move its dashboard to the next free local port and print a warning plus the new URL. In that case, keep Ollama running and open the Aegis `dashboard:` URL from the banner instead of `http://127.0.0.1:9000`.
 
 ## Local Chat

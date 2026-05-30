@@ -115,6 +115,37 @@ func (s *Store) CreateAPIKey(ctx context.Context, key NewAPIKey) error {
 	return err
 }
 
+// ResetAPIKeys revokes every active API key and stores one replacement key.
+func (s *Store) ResetAPIKeys(ctx context.Context, key NewAPIKey, at time.Time) error {
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.ExecContext(ctx, `
+		UPDATE api_keys
+		SET revoked_at = ?
+		WHERE revoked_at IS NULL
+	`, formatTime(at)); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `
+		INSERT INTO api_keys (id, label, salt, hash, created_at, requests_total)
+		VALUES (?, ?, ?, ?, ?, 0)
+	`, key.ID, key.Label, key.Salt, key.Hash, formatTime(key.CreatedAt)); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	s.invalidateActiveKeySecrets()
+	return nil
+}
+
 // ActiveKeySecrets returns hash material for all active keys.
 func (s *Store) ActiveKeySecrets(ctx context.Context) ([]APIKeySecret, error) {
 	now := time.Now().UTC()

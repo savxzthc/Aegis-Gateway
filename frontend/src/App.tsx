@@ -94,6 +94,9 @@ export default function App(): JSX.Element {
               Unlock
             </button>
           </div>
+          <p className="mt-4 text-xs leading-5 text-muted">
+            Lost the key? Stop Aegis, run <span className="font-mono text-primary">.\aegis-gateway.exe --reset-admin-key</span>, then paste the new key here.
+          </p>
         </form>
       </div>
     );
