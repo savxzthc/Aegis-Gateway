@@ -456,11 +456,14 @@ func (m *Manager) ollamaModelRunning(ctx context.Context, model string) bool {
 }
 
 func runCommand(ctx context.Context, name string, args ...string) error {
-	return exec.CommandContext(ctx, name, args...).Run()
+	cmd := exec.CommandContext(ctx, name, args...)
+	prepareBackgroundCommand(cmd)
+	return cmd.Run()
 }
 
 func runPullCommand(ctx context.Context, model string, update func(string)) error {
 	cmd := exec.CommandContext(ctx, "ollama", "pull", model)
+	prepareBackgroundCommand(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err

@@ -183,6 +183,28 @@ func TestNormalizeOllamaHostConvertsWildcardToLoopback(t *testing.T) {
 	}
 }
 
+func TestUsesOllamaBackendDetectsRegistryFallback(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Backend.DefaultType = "llamacpp"
+	cfg.Models.Registry = map[string]config.ModelConfig{
+		"local": {Backend: "ollama"},
+	}
+	if !usesOllamaBackend(cfg) {
+		t.Fatal("expected ollama registry model to be detected")
+	}
+}
+
+func TestUsesOllamaBackendSkipsLlamaCppOnlyConfig(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Backend.DefaultType = "llamacpp"
+	cfg.Models.Registry = map[string]config.ModelConfig{
+		"local": {Backend: "llamacpp"},
+	}
+	if usesOllamaBackend(cfg) {
+		t.Fatal("llama.cpp-only config should not start Ollama")
+	}
+}
+
 func freeTCPPort(t *testing.T) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

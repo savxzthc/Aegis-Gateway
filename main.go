@@ -72,6 +72,14 @@ func main() {
 
 	gpu := hardware.NewNVIDIAProvider()
 	lifecycleManager := lifecycle.NewManager(cfg)
+	ollamaService := lifecycle.NewOllamaService(cfg.Get().Backend.OllamaBaseURL)
+	if usesOllamaBackend(cfg.Get()) {
+		ollamaCtx, ollamaCancel := context.WithTimeout(context.Background(), 12*time.Second)
+		if err := ollamaService.Ensure(ollamaCtx); err != nil {
+			listenInfo.Warnings = append(listenInfo.Warnings, fmt.Sprintf("Ollama could not be started automatically: %v", err))
+		}
+		ollamaCancel()
+	}
 	app := &api.Server{
 		Config:           cfg,
 		DB:               store,
@@ -131,6 +139,11 @@ func main() {
 	defer modelShutdownCancel()
 	if err := lifecycleManager.Shutdown(modelShutdownCtx); err != nil {
 		log.Printf("model shutdown: %v", err)
+	}
+	ollamaShutdownCtx, ollamaShutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer ollamaShutdownCancel()
+	if err := ollamaService.Shutdown(ollamaShutdownCtx); err != nil {
+		log.Printf("ollama shutdown: %v", err)
 	}
 }
 
@@ -351,6 +364,22 @@ func isAddrInUse(err error) bool {
 	}
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "address already in use") || strings.Contains(message, "only one usage of each socket address")
+}
+
+func usesOllamaBackend(cfg config.Config) bool {
+	if cfg.Backend.DefaultType == "ollama" {
+		return true
+	}
+	for _, model := range cfg.Models.Registry {
+		backend := model.Backend
+		if backend == "" {
+			backend = cfg.Backend.DefaultType
+		}
+		if backend == "ollama" {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureFirstKey(ctx context.Context, cfg *config.Manager, store *db.Store) error {

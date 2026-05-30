@@ -1,5 +1,6 @@
 /aegis-gateway
 /aegis-gateway.exe
+/aegis-gateway.exe~
 /aegis.db
 /aegis.db-*
 /frontend/dist

@@ -52,7 +52,7 @@ The dashboard opens to Chat after login. Pick a model from the right rail, type 
 
 Chat messages are held in browser memory only. They are not written to SQLite, request logs, or any external service.
 
-Ollama must be running when you chat with Ollama-backed models. If your Ollama install uses a nonstandard port through `OLLAMA_HOST`, Aegis uses that value automatically when its own `ollama_base_url` is still the default.
+Aegis starts local Ollama automatically when you open the gateway and Ollama is not already reachable. On Windows this happens silently in the background, so users can launch `aegis-gateway.exe`, open the dashboard, download a model, and chat without running `ollama serve` by hand. If Ollama is already running, Aegis reuses it. If your Ollama install uses a nonstandard port through `OLLAMA_HOST`, Aegis uses that value automatically when its own `ollama_base_url` is still the default.
 
 Audit records are metadata-only and are automatically pruned after 30 days. Failed authentication attempt records are pruned after 7 days.
 
