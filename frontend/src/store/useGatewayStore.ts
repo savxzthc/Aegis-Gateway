@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import {
   APIKey,
+  CatalogModel,
   ConfigPatch,
   ConfigResponse,
   CreateKeyResponse,
@@ -14,11 +15,13 @@ import {
   gatewayErrorMessage,
   getConfig,
   getHardware,
+  getModelCatalog,
   getKeys,
   getLogs,
   getModels,
   getStats,
   patchConfig,
+  pullModel,
   revokeKey,
   setAuthToken,
 } from '../api/client';
@@ -32,6 +35,8 @@ interface GatewayState {
   error: string;
   hardware: HardwareInfo | null;
   models: ModelInfo[];
+  catalogOnline: boolean;
+  modelCatalog: CatalogModel[];
   stats: StatsResponse | null;
   logs: RequestLog[];
   logLimit: number;
@@ -44,6 +49,8 @@ interface GatewayState {
   clearCreatedKey: () => void;
   loadHardware: () => Promise<void>;
   loadModels: () => Promise<void>;
+  loadModelCatalog: () => Promise<void>;
+  pullCatalogModel: (model: string) => Promise<void>;
   loadStats: () => Promise<void>;
   loadLogs: (offset?: number) => Promise<void>;
   loadKeys: () => Promise<void>;
@@ -59,6 +66,8 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   error: '',
   hardware: null,
   models: [],
+  catalogOnline: false,
+  modelCatalog: [],
   stats: null,
   logs: [],
   logLimit: 50,
@@ -88,6 +97,29 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
       const models = await getModels();
       set({ models, connected: true });
     });
+  },
+  loadModelCatalog: async () => {
+    await guard(set, async () => {
+      const catalog = await getModelCatalog();
+      set({ modelCatalog: catalog.data, catalogOnline: catalog.online, connected: true });
+    });
+  },
+  pullCatalogModel: async (model) => {
+    try {
+      await pullModel(model);
+      const catalog = await getModelCatalog();
+      const models = await getModels();
+      set({ modelCatalog: catalog.data, catalogOnline: catalog.online, models, connected: true });
+    } catch (error) {
+      if (error instanceof GatewayAPIError && error.status === 401) {
+        window.localStorage.removeItem('aegis_api_key');
+        setAuthToken('');
+        set({ token: '', connected: false, error: 'API key rejected. Sign in again.' });
+      } else {
+        set({ error: errorMessage(error), connected: false });
+      }
+      throw error;
+    }
   },
   loadStats: async () => {
     await guard(set, async () => {

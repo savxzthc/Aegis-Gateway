@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,9 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +40,7 @@ type modelState struct {
 }
 
 type commandRunner func(ctx context.Context, name string, args ...string) error
+type pullRunner func(ctx context.Context, model string, update func(string)) error
 
 type configProvider interface {
 	Get() config.Config
@@ -49,10 +54,13 @@ type Manager struct {
 	client        *http.Client
 	states        map[string]*modelState
 	command       commandRunner
+	pullCommand   pullRunner
 	loadTimeout   time.Duration
 	runTimeout    time.Duration
 	unloadTimeout time.Duration
 	pollInterval  time.Duration
+	pullsMu       sync.RWMutex
+	pulls         map[string]*PullJob
 }
 
 // NewManager creates a lifecycle manager.
@@ -62,10 +70,12 @@ func NewManager(cfg *config.Manager) *Manager {
 		client:        &http.Client{},
 		states:        map[string]*modelState{},
 		command:       runCommand,
+		pullCommand:   runPullCommand,
 		loadTimeout:   120 * time.Second,
 		runTimeout:    60 * time.Second,
 		unloadTimeout: 15 * time.Second,
 		pollInterval:  2 * time.Second,
+		pulls:         map[string]*PullJob{},
 	}
 }
 
@@ -179,6 +189,89 @@ func (m *Manager) ActiveModel() string {
 	return ""
 }
 
+// PullJob describes the current or latest Ollama model download state.
+type PullJob struct {
+	Model       string     `json:"model"`
+	Status      string     `json:"status"`
+	ProgressPct int        `json:"progress_pct"`
+	Message     string     `json:"message"`
+	StartedAt   time.Time  `json:"started_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	Error       string     `json:"error,omitempty"`
+}
+
+// PullModel starts an Ollama model download if one is not already running.
+func (m *Manager) PullModel(ctx context.Context, model string) (PullJob, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return PullJob{}, fmt.Errorf("model is required")
+	}
+	if !validOllamaModelName(model) {
+		return PullJob{}, fmt.Errorf("model name is invalid")
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	installed := m.ollamaHasModel(checkCtx, model)
+	cancel()
+	if installed {
+		now := time.Now().UTC()
+		job := PullJob{Model: model, Status: "installed", ProgressPct: 100, Message: "Installed", StartedAt: now, CompletedAt: &now}
+		m.setPullJob(job)
+		return job, nil
+	}
+
+	m.pullsMu.Lock()
+	if existing, ok := m.pulls[model]; ok && existing.Status == "downloading" {
+		copy := *existing
+		m.pullsMu.Unlock()
+		return copy, nil
+	}
+	job := &PullJob{
+		Model:     model,
+		Status:    "downloading",
+		Message:   "Starting download",
+		StartedAt: time.Now().UTC(),
+	}
+	m.pulls[model] = job
+	m.pullsMu.Unlock()
+
+	go m.runPull(model)
+	return *job, nil
+}
+
+// PullJobs returns snapshots for known download jobs.
+func (m *Manager) PullJobs() []PullJob {
+	m.pullsMu.RLock()
+	defer m.pullsMu.RUnlock()
+	jobs := make([]PullJob, 0, len(m.pulls))
+	for _, job := range m.pulls {
+		copy := *job
+		jobs = append(jobs, copy)
+	}
+	return jobs
+}
+
+// PullJob returns a download job snapshot for model.
+func (m *Manager) PullJob(model string) (PullJob, bool) {
+	m.pullsMu.RLock()
+	defer m.pullsMu.RUnlock()
+	job, ok := m.pulls[model]
+	if !ok {
+		return PullJob{}, false
+	}
+	return *job, true
+}
+
+// OllamaInstalled reports whether the model is present in Ollama's local tag list.
+func (m *Manager) OllamaInstalled(ctx context.Context, model string) bool {
+	return m.ollamaHasModel(ctx, model)
+}
+
+// OllamaModels returns the installed Ollama model names visible through /api/tags.
+func (m *Manager) OllamaModels(ctx context.Context) map[string]bool {
+	return m.ollamaModels(ctx)
+}
+
 func (m *Manager) entryLocked(model string) *modelState {
 	entry, ok := m.states[model]
 	if !ok {
@@ -186,6 +279,59 @@ func (m *Manager) entryLocked(model string) *modelState {
 		m.states[model] = entry
 	}
 	return entry
+}
+
+func (m *Manager) setPullJob(job PullJob) {
+	m.pullsMu.Lock()
+	defer m.pullsMu.Unlock()
+	copy := job
+	m.pulls[job.Model] = &copy
+}
+
+func (m *Manager) runPull(model string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+	err := m.pullCommand(ctx, model, func(line string) {
+		m.updatePull(model, line)
+	})
+	now := time.Now().UTC()
+	m.pullsMu.Lock()
+	defer m.pullsMu.Unlock()
+	job := m.pulls[model]
+	if job == nil {
+		job = &PullJob{Model: model, StartedAt: now}
+		m.pulls[model] = job
+	}
+	job.CompletedAt = &now
+	if err != nil {
+		job.Status = "failed"
+		job.Error = "ollama pull failed"
+		job.Message = "Download failed"
+		return
+	}
+	job.Status = "installed"
+	job.ProgressPct = 100
+	job.Message = "Installed"
+	job.Error = ""
+}
+
+func (m *Manager) updatePull(model, raw string) {
+	message, pct := parsePullProgress(raw)
+	if message == "" && pct < 0 {
+		return
+	}
+	m.pullsMu.Lock()
+	defer m.pullsMu.Unlock()
+	job := m.pulls[model]
+	if job == nil {
+		return
+	}
+	if message != "" {
+		job.Message = message
+	}
+	if pct >= 0 && pct > job.ProgressPct {
+		job.ProgressPct = pct
+	}
 }
 
 func (m *Manager) load(ctx context.Context, model string) error {
@@ -313,19 +459,94 @@ func runCommand(ctx context.Context, name string, args ...string) error {
 	return exec.CommandContext(ctx, name, args...).Run()
 }
 
+func runPullCommand(ctx context.Context, model string, update func(string)) error {
+	cmd := exec.CommandContext(ctx, "ollama", "pull", model)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	var wg sync.WaitGroup
+	readPipe := func(scanner *bufio.Scanner) {
+		defer wg.Done()
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		scanner.Split(scanProgressLines)
+		for scanner.Scan() {
+			update(scanner.Text())
+		}
+	}
+	wg.Add(2)
+	go readPipe(bufio.NewScanner(stdout))
+	go readPipe(bufio.NewScanner(stderr))
+	waitErr := cmd.Wait()
+	wg.Wait()
+	return waitErr
+}
+
+func scanProgressLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	for i, b := range data {
+		if b == '\n' || b == '\r' {
+			return i + 1, bytes.TrimSpace(data[:i]), nil
+		}
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), bytes.TrimSpace(data), nil
+	}
+	return 0, nil, nil
+}
+
+var (
+	progressPercentRE = regexp.MustCompile(`\b(\d{1,3})%`)
+	ansiRE            = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	modelNameRE       = regexp.MustCompile(`^[A-Za-z0-9_.:/-]+$`)
+)
+
+func parsePullProgress(raw string) (string, int) {
+	line := strings.TrimSpace(ansiRE.ReplaceAllString(raw, ""))
+	line = strings.Join(strings.Fields(line), " ")
+	if line == "" {
+		return "", -1
+	}
+	pct := -1
+	if match := progressPercentRE.FindStringSubmatch(line); len(match) == 2 {
+		if parsed, err := strconv.Atoi(match[1]); err == nil {
+			if parsed > 100 {
+				parsed = 100
+			}
+			pct = parsed
+		}
+	}
+	return line, pct
+}
+
+func validOllamaModelName(model string) bool {
+	return len(model) <= 160 && modelNameRE.MatchString(model)
+}
+
 func (m *Manager) ollamaHasModel(ctx context.Context, model string) bool {
+	return m.ollamaModels(ctx)[model]
+}
+
+func (m *Manager) ollamaModels(ctx context.Context) map[string]bool {
 	baseURL := m.cfg.Get().Backend.OllamaBaseURL
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/tags", nil)
 	if err != nil {
-		return false
+		return map[string]bool{}
 	}
 	res, err := m.client.Do(req)
 	if err != nil {
-		return false
+		return map[string]bool{}
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return false
+		return map[string]bool{}
 	}
 	var tags struct {
 		Models []struct {
@@ -333,12 +554,11 @@ func (m *Manager) ollamaHasModel(ctx context.Context, model string) bool {
 		} `json:"models"`
 	}
 	if json.NewDecoder(res.Body).Decode(&tags) != nil {
-		return false
+		return map[string]bool{}
 	}
+	models := make(map[string]bool, len(tags.Models))
 	for _, item := range tags.Models {
-		if item.Name == model {
-			return true
-		}
+		models[item.Name] = true
 	}
-	return false
+	return models
 }

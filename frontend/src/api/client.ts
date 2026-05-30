@@ -25,6 +25,37 @@ export interface ModelListResponse {
   data: ModelInfo[];
 }
 
+export interface CatalogModel {
+  id: string;
+  display_name: string;
+  backend: 'ollama' | 'llamacpp';
+  vram_gb: number;
+  size_gb: number;
+  description: string;
+  use_case: string;
+  library_url: string;
+  installed: boolean;
+  registered: boolean;
+  status: 'available' | 'downloading' | 'installed' | 'failed';
+  progress_pct: number;
+  message: string;
+}
+
+export interface ModelCatalogResponse {
+  online: boolean;
+  data: CatalogModel[];
+}
+
+export interface PullJob {
+  model: string;
+  status: 'downloading' | 'installed' | 'failed';
+  progress_pct: number;
+  message: string;
+  started_at: string;
+  completed_at?: string;
+  error?: string;
+}
+
 export interface TopModel {
   model: string;
   count: number;
@@ -230,6 +261,14 @@ export function gatewayErrorMessage(error: unknown): string {
         return 'The local model runner did not complete the request. Make sure Ollama is running and the selected model is installed.';
       case 'MODEL_NOT_REGISTERED':
         return 'That model is not registered in config.toml. Add it to the model registry, then restart Aegis.';
+      case 'MODEL_NOT_IN_CATALOG':
+        return 'That model is not available in the Aegis download catalog.';
+      case 'MODEL_LIBRARY_OFFLINE':
+        return 'The Ollama model library is not reachable. Check your internet connection and try again.';
+      case 'MODEL_PULL_START_FAILED':
+        return 'Aegis could not start the model download. Make sure Ollama is installed, running, and available on PATH.';
+      case 'MODEL_REGISTER_FAILED':
+        return 'Aegis could not register the model in config.toml before downloading.';
       case 'NO_MODEL_FITS':
         return 'No registered model fits the currently available VRAM. Close GPU-heavy apps or add a smaller fallback model.';
       case 'HARDWARE_QUERY_FAILED':
@@ -276,6 +315,16 @@ export async function getHardware(): Promise<HardwareInfo> {
 export async function getModels(): Promise<ModelInfo[]> {
   const res = await client.get<ModelListResponse>('/models');
   return res.data.data;
+}
+
+export async function getModelCatalog(): Promise<ModelCatalogResponse> {
+  const res = await client.get<ModelCatalogResponse>('/models/catalog', { timeout: 10000 });
+  return res.data;
+}
+
+export async function pullModel(model: string): Promise<PullJob> {
+  const res = await client.post<PullJob>('/models/pull', { model }, { timeout: 15000 });
+  return res.data;
 }
 
 export async function getStats(): Promise<StatsResponse> {

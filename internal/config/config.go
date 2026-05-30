@@ -203,6 +203,35 @@ func (m *Manager) PatchEditable(patch EditablePatch) (Config, error) {
 	return cloneConfig(m.cfg), nil
 }
 
+// RegisterModel adds or updates one model registry entry and writes config.toml.
+func (m *Manager) RegisterModel(name string, model ModelConfig) (Config, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	name = strings.TrimSpace(name)
+	next := cloneConfig(m.cfg)
+	if next.Models.Registry == nil {
+		next.Models.Registry = map[string]ModelConfig{}
+	}
+	next.Models.Registry[name] = model
+	if err := Validate(&next); err != nil {
+		return Config{}, err
+	}
+	if err := writeTOML(m.path, next); err != nil {
+		return Config{}, err
+	}
+	m.cfg = next
+	return cloneConfig(m.cfg), nil
+}
+
+// HasModel reports whether a model is already registered.
+func (m *Manager) HasModel(name string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.cfg.Models.Registry[name]
+	return ok
+}
+
 // SortedModels returns model names sorted by ascending name.
 func SortedModels(registry map[string]ModelConfig) []string {
 	names := make([]string, 0, len(registry))

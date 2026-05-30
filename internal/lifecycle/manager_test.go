@@ -179,6 +179,63 @@ func TestShutdownUnloadsResidentModels(t *testing.T) {
 	}
 }
 
+func TestPullModelTracksProgressAndCompletion(t *testing.T) {
+	cfg := lifecycleConfig(t)
+	ollama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/tags" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"models":[]}`))
+	}))
+	defer ollama.Close()
+	setOllamaBaseURL(t, cfg, ollama.URL)
+
+	manager := NewManager(cfg)
+	manager.pullCommand = func(ctx context.Context, model string, update func(string)) error {
+		if model != "phi3:mini" {
+			t.Fatalf("model = %s", model)
+		}
+		update("pulling manifest")
+		update("pulling layer 42%")
+		return nil
+	}
+
+	job, err := manager.PullModel(context.Background(), "phi3:mini")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != "downloading" {
+		t.Fatalf("initial status = %#v", job)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		job, _ = manager.PullJob("phi3:mini")
+		if job.Status == "installed" {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if job.Status != "installed" || job.ProgressPct != 100 {
+		t.Fatalf("final job = %#v", job)
+	}
+}
+
+func TestPullModelRejectsInvalidName(t *testing.T) {
+	cfg := lifecycleConfig(t)
+	manager := NewManager(cfg)
+	if _, err := manager.PullModel(context.Background(), "bad model; rm -rf"); err == nil {
+		t.Fatal("expected invalid model name error")
+	}
+}
+
+func TestParsePullProgress(t *testing.T) {
+	message, pct := parsePullProgress("\x1b[?25lpulling layer 73%")
+	if message != "pulling layer 73%" || pct != 73 {
+		t.Fatalf("message=%q pct=%d", message, pct)
+	}
+}
+
 type fixedIdleConfig struct {
 	*config.Manager
 	idle time.Duration
