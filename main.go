@@ -481,28 +481,60 @@ func rootHandler(apiHandler http.Handler, store readinessStore) (http.Handler, e
 		}
 		path := strings.TrimPrefix(r.URL.Path, "/")
 		if path == "" {
-			path = "index.html"
+			serveFrontendIndex(w, dist)
+			return
 		}
 		if file, err := dist.Open(path); err == nil {
 			_ = file.Close()
+			if path == "index.html" {
+				w.Header().Set("Cache-Control", "no-store")
+			} else if strings.HasPrefix(path, "assets/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			}
 			files.ServeHTTP(w, r)
 			return
 		}
-		index, err := dist.Open("index.html")
-		if err != nil {
+		if strings.HasPrefix(path, "assets/") {
+			if strings.HasSuffix(path, ".js") {
+				serveStaleAssetRecovery(w)
+				return
+			}
 			http.NotFound(w, r)
 			return
 		}
-		defer index.Close()
-		body, err := io.ReadAll(index)
-		if err != nil {
-			writeRootJSON(w, http.StatusInternalServerError, map[string]string{"error": "frontend unavailable", "code": "FRONTEND_UNAVAILABLE"})
+		if strings.Contains(path[strings.LastIndex(path, "/")+1:], ".") {
+			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(body)
+		serveFrontendIndex(w, dist)
 	})
 	return securityHeaders(mux), nil
+}
+
+func serveStaleAssetRecovery(w http.ResponseWriter) {
+	body := `window.location.replace(window.location.pathname + window.location.search + (window.location.search ? '&' : '?') + 'aegis_cache_bust=' + Date.now());`
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	_, _ = w.Write([]byte(body))
+}
+
+func serveFrontendIndex(w http.ResponseWriter, dist fs.FS) {
+	index, err := dist.Open("index.html")
+	if err != nil {
+		writeRootJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "frontend unavailable", "code": "FRONTEND_UNAVAILABLE"})
+		return
+	}
+	defer index.Close()
+	body, err := io.ReadAll(index)
+	if err != nil {
+		writeRootJSON(w, http.StatusInternalServerError, map[string]string{"error": "frontend unavailable", "code": "FRONTEND_UNAVAILABLE"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	_, _ = w.Write(body)
 }
 
 func writeRootJSON(w http.ResponseWriter, status int, value interface{}) {

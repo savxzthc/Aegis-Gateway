@@ -91,6 +91,63 @@ func TestRootHandlerAddsVersionHeader(t *testing.T) {
 	}
 }
 
+func TestRootHandlerDoesNotCacheIndex(t *testing.T) {
+	handler, err := rootHandler(http.NotFoundHandler(), readyStoreStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("got status %d body %s", res.Code, res.Body.String())
+	}
+	if got := res.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("cache control = %q", got)
+	}
+}
+
+func TestRootHandlerMissingJSAssetReturnsRecoveryModule(t *testing.T) {
+	handler, err := rootHandler(http.NotFoundHandler(), readyStoreStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/stale-bundle.js", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("got status %d body %s", res.Code, res.Body.String())
+	}
+	if got := res.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/javascript") {
+		t.Fatalf("content type = %q", got)
+	}
+	if strings.Contains(res.Body.String(), "<!doctype html>") {
+		t.Fatal("missing asset returned the frontend index")
+	}
+	if !strings.Contains(res.Body.String(), "aegis_cache_bust") {
+		t.Fatalf("missing JS asset did not return recovery module: %s", res.Body.String())
+	}
+}
+
+func TestRootHandlerMissingNonJSAssetReturnsNotFound(t *testing.T) {
+	handler, err := rootHandler(http.NotFoundHandler(), readyStoreStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/stale-style.css", nil)
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("got status %d body %s", res.Code, res.Body.String())
+	}
+}
+
 func TestOpenGatewayListenerMovesWhenPortIsOllama(t *testing.T) {
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
