@@ -2,12 +2,15 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/savxzthc/aegis-gateway/internal/db"
@@ -26,19 +29,27 @@ type Store interface {
 
 // Middleware authenticates Bearer API keys and applies rate limits.
 type Middleware struct {
-	store   Store
-	limiter *RateLimiter
-	rpmFunc func() int
-	nowFunc func() time.Time
+	store      Store
+	limiter    *RateLimiter
+	rpmFunc    func() int
+	nowFunc    func() time.Time
+	cacheMu    sync.RWMutex
+	tokenCache map[string]cachedToken
+}
+
+type cachedToken struct {
+	keyID     string
+	expiresAt time.Time
 }
 
 // NewMiddleware creates chi-compatible auth middleware.
 func NewMiddleware(store Store, limiter *RateLimiter, rpmFunc func() int) *Middleware {
 	return &Middleware{
-		store:   store,
-		limiter: limiter,
-		rpmFunc: rpmFunc,
-		nowFunc: func() time.Time { return time.Now().UTC() },
+		store:      store,
+		limiter:    limiter,
+		rpmFunc:    rpmFunc,
+		nowFunc:    func() time.Time { return time.Now().UTC() },
+		tokenCache: map[string]cachedToken{},
 	}
 }
 
@@ -52,24 +63,31 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		secrets, err := m.store.ActiveKeySecrets(r.Context())
-		if err != nil {
-			writeAuthError(w, http.StatusInternalServerError, "auth store unavailable", "AUTH_STORE_ERROR")
-			return
+		now := m.nowFunc()
+		keyID, ok := m.cachedKeyID(token, now)
+		if !ok {
+			secrets, err := m.store.ActiveKeySecrets(r.Context())
+			if err != nil {
+				writeAuthError(w, http.StatusInternalServerError, "auth store unavailable", "AUTH_STORE_ERROR")
+				return
+			}
+			keyID = matchKeyID(token, secrets)
+			if keyID != "" {
+				m.cacheKeyID(token, keyID, now.Add(10*time.Second))
+			}
 		}
-		keyID, _ := matchKeyID(token, secrets)
 		if keyID == "" {
 			m.unauthorized(w, r, ip)
 			return
 		}
 
 		limitKey := ip + ":" + keyID
-		if ok, retryAfter := m.limiter.Allow(limitKey, m.rpmFunc(), m.nowFunc()); !ok {
+		if ok, retryAfter := m.limiter.Allow(limitKey, m.rpmFunc(), now); !ok {
 			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
 			writeAuthError(w, http.StatusTooManyRequests, "rate limit exceeded", "RATE_LIMITED")
 			return
 		}
-		if err := m.store.MarkKeyUsed(r.Context(), keyID, m.nowFunc()); err != nil {
+		if err := m.store.MarkKeyUsed(r.Context(), keyID, now); err != nil {
 			writeAuthError(w, http.StatusInternalServerError, "auth store unavailable", "AUTH_STORE_ERROR")
 			return
 		}
@@ -78,17 +96,42 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 	})
 }
 
-func matchKeyID(token string, secrets []db.APIKeySecret) (string, int) {
+func matchKeyID(token string, secrets []db.APIKeySecret) string {
 	keyID := ""
-	comparisons := 0
 	for _, secret := range secrets {
 		candidate := HashKey(token, secret.Salt)
-		comparisons++
 		if subtle.ConstantTimeCompare([]byte(candidate), []byte(secret.Hash)) == 1 {
 			keyID = secret.ID
 		}
 	}
-	return keyID, comparisons
+	return keyID
+}
+
+func (m *Middleware) cachedKeyID(token string, now time.Time) (string, bool) {
+	cacheKey := tokenCacheKey(token)
+	m.cacheMu.RLock()
+	cached, ok := m.tokenCache[cacheKey]
+	m.cacheMu.RUnlock()
+	if !ok || !now.Before(cached.expiresAt) {
+		if ok {
+			m.cacheMu.Lock()
+			delete(m.tokenCache, cacheKey)
+			m.cacheMu.Unlock()
+		}
+		return "", false
+	}
+	return cached.keyID, true
+}
+
+func (m *Middleware) cacheKeyID(token, keyID string, expiresAt time.Time) {
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+	m.tokenCache[tokenCacheKey(token)] = cachedToken{keyID: keyID, expiresAt: expiresAt}
+}
+
+func tokenCacheKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 // KeyIDFromContext extracts the authenticated API key ID.

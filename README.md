@@ -67,6 +67,9 @@ Every API response includes `X-Request-Id` and `X-Aegis-Version` so local client
 | `/v1/chat/completions` | POST | Yes | OpenAI-compatible chat completions with streaming support |
 | `/v1/completions` | POST | Yes | Legacy completions compatibility endpoint |
 | `/v1/models` | GET | Yes | OpenAI-style model list plus Aegis metadata |
+| `/v1/models/catalog?category=standard&limit=12&offset=0` | GET | Yes | Paginated downloadable Ollama model catalog |
+| `/v1/models/pull` | POST | Yes | Start downloading a catalog model through Ollama |
+| `/v1/models/pull/{model}` | GET | Yes | Read one model download job status |
 | `/v1/hardware` | GET | Yes | Current GPU and VRAM state |
 | `/v1/stats` | GET | Yes | Request totals, latency, model usage, fallback rate, hourly counts |
 | `/v1/logs?limit=50&offset=0` | GET | Yes | Metadata-only audit log |
@@ -94,6 +97,12 @@ Every API response includes `X-Request-Id` and `X-Aegis-Version` so local client
 | `models.registry.<name>.vram_gb` | number | varies | Estimated VRAM needed to run the model |
 | `models.registry.<name>.backend` | string | `ollama` | Backend override for the model |
 | `models.registry.<name>.description` | string | varies | Human-readable dashboard description |
+
+## Security Notes
+
+Every active API key is an admin key in the current release. Any valid key can create or revoke other keys, except Aegis prevents revoking the final active key to avoid lockout. Keep keys local and only share them with clients you trust.
+
+The default bind address is `0.0.0.0` for LAN access. Aegis prints a warning when it is reachable from other devices on the network; set `server.host = "127.0.0.1"` for loopback-only use.
 
 ## How VRAM Routing Works
 

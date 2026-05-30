@@ -1,0 +1,17 @@
+# Changelog
+
+## Unreleased
+
+- Added auth hot-path caching to avoid repeated PBKDF2 work for every active key on every request.
+- Added cached active-key secret reads with invalidation on key create and revoke.
+- Added background rate-limiter pruning to prevent stale key growth.
+- Added connection reuse fixes for Ollama lifecycle HTTP responses.
+- Added `:latest`-aware Ollama model matching.
+- Added bounded HTTP write timeout for long-running streams.
+- Added single pull-job status endpoint at `/v1/models/pull/{model}`.
+- Added clearer startup backend output and LAN binding warnings.
+
+## v0.1.0
+
+- Initial Aegis Gateway foundation with OpenAI-compatible chat and completions APIs.
+- Added local dashboard, API key management, VRAM-aware routing, model lifecycle control, metadata-only audit logs, and downloadable Ollama model catalog.

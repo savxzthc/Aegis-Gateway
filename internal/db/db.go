@@ -14,6 +14,9 @@ type Store struct {
 	conn              *sql.DB
 	pruneMu           sync.Mutex
 	lastMetadataPrune time.Time
+	activeKeysMu      sync.RWMutex
+	activeKeys        []APIKeySecret
+	activeKeysExpires time.Time
 }
 
 // Open initializes a SQLite store and applies migrations.

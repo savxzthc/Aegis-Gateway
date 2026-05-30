@@ -320,7 +320,7 @@ func cloneRegistry(in map[string]ModelConfig) map[string]ModelConfig {
 }
 
 func writeTOML(path string, cfg Config) error {
-	return os.WriteFile(path, []byte(commentedTOML(cfg)), 0o644)
+	return os.WriteFile(path, []byte(commentedTOML(cfg)), 0o600)
 }
 
 func commentedTOML(cfg Config) string {

@@ -10,6 +10,7 @@ const (
 	requestLogRetention  = 30 * 24 * time.Hour
 	authFailureRetention = 7 * 24 * time.Hour
 	metadataPruneEvery   = time.Hour
+	activeKeysCacheTTL   = 15 * time.Second
 	sqliteTimeLayout     = "2006-01-02T15:04:05.000000000Z"
 )
 
@@ -95,11 +96,23 @@ func (s *Store) CreateAPIKey(ctx context.Context, key NewAPIKey) error {
 		INSERT INTO api_keys (id, label, salt, hash, created_at, requests_total)
 		VALUES (?, ?, ?, ?, ?, 0)
 	`, key.ID, key.Label, key.Salt, key.Hash, formatTime(key.CreatedAt))
+	if err == nil {
+		s.invalidateActiveKeySecrets()
+	}
 	return err
 }
 
 // ActiveKeySecrets returns hash material for all active keys.
 func (s *Store) ActiveKeySecrets(ctx context.Context) ([]APIKeySecret, error) {
+	now := time.Now().UTC()
+	s.activeKeysMu.RLock()
+	if now.Before(s.activeKeysExpires) {
+		keys := cloneAPIKeySecrets(s.activeKeys)
+		s.activeKeysMu.RUnlock()
+		return keys, nil
+	}
+	s.activeKeysMu.RUnlock()
+
 	rows, err := s.conn.QueryContext(ctx, `
 		SELECT id, salt, hash
 		FROM api_keys
@@ -119,7 +132,14 @@ func (s *Store) ActiveKeySecrets(ctx context.Context) ([]APIKeySecret, error) {
 		}
 		keys = append(keys, key)
 	}
-	return keys, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	s.activeKeysMu.Lock()
+	s.activeKeys = cloneAPIKeySecrets(keys)
+	s.activeKeysExpires = now.Add(activeKeysCacheTTL)
+	s.activeKeysMu.Unlock()
+	return keys, nil
 }
 
 // ListAPIKeys returns dashboard-safe active API keys.
@@ -181,6 +201,9 @@ func (s *Store) RevokeAPIKey(ctx context.Context, id string, at time.Time) (bool
 		return false, err
 	}
 	affected, err := res.RowsAffected()
+	if err == nil && affected > 0 {
+		s.invalidateActiveKeySecrets()
+	}
 	return affected > 0, err
 }
 
@@ -232,6 +255,9 @@ func (s *Store) RevokeAPIKeyIfNotLast(ctx context.Context, id string, at time.Ti
 	}
 	if err = tx.Commit(); err != nil {
 		return false, false, err
+	}
+	if affected > 0 {
+		s.invalidateActiveKeySecrets()
 	}
 	return affected > 0, false, nil
 }
@@ -438,4 +464,17 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func cloneAPIKeySecrets(in []APIKeySecret) []APIKeySecret {
+	out := make([]APIKeySecret, len(in))
+	copy(out, in)
+	return out
+}
+
+func (s *Store) invalidateActiveKeySecrets() {
+	s.activeKeysMu.Lock()
+	defer s.activeKeysMu.Unlock()
+	s.activeKeys = nil
+	s.activeKeysExpires = time.Time{}
 }

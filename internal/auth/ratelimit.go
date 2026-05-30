@@ -10,11 +10,26 @@ type RateLimiter struct {
 	mu        sync.Mutex
 	entries   map[string][]time.Time
 	lastPrune time.Time
+	stop      chan struct{}
 }
 
 // NewRateLimiter creates an empty sliding-window limiter.
 func NewRateLimiter() *RateLimiter {
-	return &RateLimiter{entries: map[string][]time.Time{}}
+	limiter := &RateLimiter{
+		entries: map[string][]time.Time{},
+		stop:    make(chan struct{}),
+	}
+	go limiter.pruneLoop(time.Minute)
+	return limiter
+}
+
+// Stop stops background pruning for tests or controlled shutdown.
+func (r *RateLimiter) Stop() {
+	select {
+	case <-r.stop:
+	default:
+		close(r.stop)
+	}
 }
 
 // Allow records a request if it fits within limit and returns retry timing.
@@ -47,6 +62,22 @@ func (r *RateLimiter) Allow(key string, limit int, now time.Time) (bool, time.Du
 	keep = append(keep, now)
 	r.entries[key] = keep
 	return true, 0
+}
+
+func (r *RateLimiter) pruneLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now().UTC()
+			r.mu.Lock()
+			r.pruneLocked(now.Add(-time.Minute), now)
+			r.mu.Unlock()
+		case <-r.stop:
+			return
+		}
+	}
 }
 
 func (r *RateLimiter) pruneLocked(windowStart, now time.Time) {

@@ -183,6 +183,23 @@ func TestNormalizeOllamaHostConvertsWildcardToLoopback(t *testing.T) {
 	}
 }
 
+func TestNormalizeOllamaHostRejectsInvalidPort(t *testing.T) {
+	if _, err := normalizeOllamaHost("127.0.0.1:99999"); err == nil {
+		t.Fatal("expected invalid port error")
+	}
+}
+
+func TestBindsAllInterfaces(t *testing.T) {
+	for _, host := range []string{"", "0.0.0.0", "::", "[::]"} {
+		if !bindsAllInterfaces(host) {
+			t.Fatalf("%q should bind all interfaces", host)
+		}
+	}
+	if bindsAllInterfaces("127.0.0.1") {
+		t.Fatal("loopback should not bind all interfaces")
+	}
+}
+
 func TestUsesOllamaBackendDetectsRegistryFallback(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Backend.DefaultType = "llamacpp"

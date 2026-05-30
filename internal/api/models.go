@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/savxzthc/aegis-gateway/internal/config"
 	"github.com/savxzthc/aegis-gateway/internal/lifecycle"
 )
@@ -144,6 +146,21 @@ func (s *Server) PullModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, job)
+}
+
+// PullModelStatus handles GET /v1/models/pull/{model}.
+func (s *Server) PullModelStatus(w http.ResponseWriter, r *http.Request) {
+	model, err := url.PathUnescape(chi.URLParam(r, "*"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "model path is invalid", "INVALID_MODEL_PATH")
+		return
+	}
+	job, ok := s.Lifecycle.PullJob(model)
+	if !ok {
+		writeError(w, http.StatusNotFound, "pull job not found", "PULL_JOB_NOT_FOUND")
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
 }
 
 type modelListResponse struct {

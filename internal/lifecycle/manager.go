@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os/exec"
@@ -375,7 +376,7 @@ func (m *Manager) warmModel(ctx context.Context, model string) error {
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer drainAndClose(res.Body)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return fmt.Errorf("ollama warmup failed with status %d", res.StatusCode)
 	}
@@ -434,7 +435,7 @@ func (m *Manager) ollamaModelRunning(ctx context.Context, model string) bool {
 	if err != nil {
 		return false
 	}
-	defer res.Body.Close()
+	defer drainAndClose(res.Body)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return false
 	}
@@ -448,7 +449,7 @@ func (m *Manager) ollamaModelRunning(ctx context.Context, model string) bool {
 		return false
 	}
 	for _, item := range ps.Models {
-		if item.Name == model || item.Model == model {
+		if ollamaModelMatches(item.Name, model) || ollamaModelMatches(item.Model, model) {
 			return true
 		}
 	}
@@ -547,7 +548,7 @@ func (m *Manager) ollamaModels(ctx context.Context) map[string]bool {
 	if err != nil {
 		return map[string]bool{}
 	}
-	defer res.Body.Close()
+	defer drainAndClose(res.Body)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return map[string]bool{}
 	}
@@ -562,6 +563,20 @@ func (m *Manager) ollamaModels(ctx context.Context) map[string]bool {
 	models := make(map[string]bool, len(tags.Models))
 	for _, item := range tags.Models {
 		models[item.Name] = true
+		models[normalizeOllamaModelName(item.Name)] = true
 	}
 	return models
+}
+
+func drainAndClose(body io.ReadCloser) {
+	_, _ = io.Copy(io.Discard, body)
+	_ = body.Close()
+}
+
+func ollamaModelMatches(found, requested string) bool {
+	return normalizeOllamaModelName(found) == normalizeOllamaModelName(requested)
+}
+
+func normalizeOllamaModelName(model string) string {
+	return strings.TrimSuffix(strings.TrimSpace(model), ":latest")
 }

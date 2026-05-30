@@ -337,7 +337,7 @@ func (s *Server) logRequest(ctx context.Context, started time.Time, keyID, reque
 	}
 	logCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_ = s.DB.InsertRequestLog(logCtx, db.RequestLog{
+	if err := s.DB.InsertRequestLog(logCtx, db.RequestLog{
 		Timestamp:                 started,
 		KeyID:                     keyID,
 		ModelRequested:            requested,
@@ -348,7 +348,9 @@ func (s *Server) logRequest(ctx context.Context, started time.Time, keyID, reque
 		EstimatedPromptTokens:     promptTokens,
 		EstimatedCompletionTokens: completionTokens,
 		StatusCode:                status,
-	})
+	}); err != nil {
+		log.Printf("aegis: request log failed: %v", err)
+	}
 }
 
 func (s *Server) logPrivateFailure(r *http.Request, code, model, backendType string) {

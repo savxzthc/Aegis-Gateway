@@ -55,6 +55,9 @@ func main() {
 			log.Fatalf("ollama host: %v", err)
 		}
 	}
+	if bindsAllInterfaces(cfg.Get().Server.Host) {
+		listenInfo.Warnings = append(listenInfo.Warnings, "Aegis is bound to all network interfaces; API keys may be sent over your LAN in plaintext unless you use a local-only host.")
+	}
 	store, err := db.Open("aegis.db")
 	if err != nil {
 		log.Fatalf("database: %v", err)
@@ -104,13 +107,13 @@ func main() {
 	}
 
 	current := cfg.Get()
-	printBanner(listenInfo.URL, current.Backend.OllamaBaseURL, listenInfo.Warnings)
+	printBanner(listenInfo.URL, current, listenInfo.Warnings)
 	server := &http.Server{
 		Addr:              listener.Addr().String(),
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       5 * time.Minute,
-		WriteTimeout:      0,
+		WriteTimeout:      15 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 	}
 
@@ -255,6 +258,10 @@ func normalizeOllamaHost(value string) (string, error) {
 	if port == "" {
 		port = "11434"
 	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum < 1 || portNum > 65535 {
+		return "", fmt.Errorf("OLLAMA_HOST port must be between 1 and 65535")
+	}
 	if host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
@@ -358,14 +365,6 @@ func displayHost(host string) string {
 	}
 }
 
-func isAddrInUse(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "address already in use") || strings.Contains(message, "only one usage of each socket address")
-}
-
 func usesOllamaBackend(cfg config.Config) bool {
 	if cfg.Backend.DefaultType == "ollama" {
 		return true
@@ -380,6 +379,11 @@ func usesOllamaBackend(cfg config.Config) bool {
 		}
 	}
 	return false
+}
+
+func bindsAllInterfaces(host string) bool {
+	trimmed := strings.Trim(host, "[]")
+	return trimmed == "" || trimmed == "0.0.0.0" || trimmed == "::"
 }
 
 func ensureFirstKey(ctx context.Context, cfg *config.Manager, store *db.Store) error {
@@ -507,7 +511,7 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func printBanner(url string, ollamaBaseURL string, warnings []string) {
+func printBanner(url string, cfg config.Config, warnings []string) {
 	fmt.Println()
 	fmt.Println("Aegis Gateway")
 	fmt.Println("privacy-first local AI gateway")
@@ -515,7 +519,9 @@ func printBanner(url string, ollamaBaseURL string, warnings []string) {
 		fmt.Printf("warning: %s\n", warning)
 	}
 	fmt.Printf("dashboard: %s\n", url)
-	fmt.Printf("ollama backend: %s\n", ollamaBaseURL)
+	fmt.Printf("default backend: %s\n", cfg.Backend.DefaultType)
+	fmt.Printf("ollama backend: %s\n", cfg.Backend.OllamaBaseURL)
+	fmt.Printf("llama.cpp backend: %s\n", cfg.Backend.LlamaCppBaseURL)
 	fmt.Println()
 }
 

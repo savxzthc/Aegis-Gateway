@@ -146,6 +146,47 @@ func TestRevokeAPIKeyIfNotLastPreventsLockout(t *testing.T) {
 	}
 }
 
+func TestActiveKeySecretsCacheInvalidatesOnKeyChanges(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "aegis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	created := time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)
+	if err := store.CreateAPIKey(ctx, NewAPIKey{ID: "key_one", Label: "One", Salt: "salt", Hash: "hash", CreatedAt: created}); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := store.ActiveKeySecrets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("got %d keys, want 1", len(keys))
+	}
+	if err := store.CreateAPIKey(ctx, NewAPIKey{ID: "key_two", Label: "Two", Salt: "salt", Hash: "hash", CreatedAt: created}); err != nil {
+		t.Fatal(err)
+	}
+	keys, err = store.ActiveKeySecrets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("cache was not invalidated after create: %#v", keys)
+	}
+	if revoked, err := store.RevokeAPIKey(ctx, "key_one", created.Add(time.Minute)); err != nil || !revoked {
+		t.Fatalf("revoke failed revoked=%v err=%v", revoked, err)
+	}
+	keys, err = store.ActiveKeySecrets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0].ID != "key_two" {
+		t.Fatalf("cache was not invalidated after revoke: %#v", keys)
+	}
+}
+
 func TestPruneOldMetadataRemovesExpiredRows(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(filepath.Join(t.TempDir(), "aegis.db"))

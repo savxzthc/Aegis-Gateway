@@ -236,6 +236,18 @@ func TestParsePullProgress(t *testing.T) {
 	}
 }
 
+func TestOllamaModelMatchesLatestSuffix(t *testing.T) {
+	if !ollamaModelMatches("llama3:8b:latest", "llama3:8b") {
+		t.Fatal("expected :latest suffix to match requested model")
+	}
+	if !ollamaModelMatches("llama3:8b", "llama3:8b:latest") {
+		t.Fatal("expected requested :latest suffix to match model")
+	}
+	if ollamaModelMatches("llama3:70b", "llama3:8b") {
+		t.Fatal("different model tags should not match")
+	}
+}
+
 type fixedIdleConfig struct {
 	*config.Manager
 	idle time.Duration

@@ -153,7 +153,7 @@ func (s *OllamaService) ping(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	defer res.Body.Close()
+	defer drainAndClose(res.Body)
 	return res.StatusCode >= 200 && res.StatusCode < 300
 }
 

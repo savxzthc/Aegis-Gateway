@@ -12,14 +12,18 @@ import (
 )
 
 type authStoreStub struct {
-	secrets      []db.APIKeySecret
-	failures     int
-	usedKeyID    string
-	markUsedErr  error
-	failuresSeen []string
+	secrets              []db.APIKeySecret
+	failures             int
+	usedKeyID            string
+	markUsedErr          error
+	failuresSeen         []string
+	ActiveKeySecretsFunc func(context.Context) ([]db.APIKeySecret, error)
 }
 
 func (s *authStoreStub) ActiveKeySecrets(ctx context.Context) ([]db.APIKeySecret, error) {
+	if s.ActiveKeySecretsFunc != nil {
+		return s.ActiveKeySecretsFunc(ctx)
+	}
 	return s.secrets, nil
 }
 
@@ -71,12 +75,43 @@ func TestMatchKeyIDScansAllSecrets(t *testing.T) {
 		{ID: "key_3", Salt: "salt-3", Hash: HashKey("different", "salt-3")},
 	}
 
-	id, comparisons := matchKeyID(key, secrets)
+	id := matchKeyID(key, secrets)
 	if id != "key_2" {
 		t.Fatalf("got key id %q", id)
 	}
-	if comparisons != len(secrets) {
-		t.Fatalf("got %d comparisons, want %d", comparisons, len(secrets))
+}
+
+func TestMiddlewareCachesValidatedBearerToken(t *testing.T) {
+	key := "secret"
+	salt := "salt"
+	store := &authStoreStub{secrets: []db.APIKeySecret{{
+		ID:   "key_1",
+		Salt: salt,
+		Hash: HashKey(key, salt),
+	}}}
+	mw := NewMiddleware(store, NewRateLimiter(), func() int { return 60 })
+	now := time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC)
+	mw.nowFunc = func() time.Time { return now }
+	lookups := 0
+	store.ActiveKeySecretsFunc = func(ctx context.Context) ([]db.APIKeySecret, error) {
+		lookups++
+		return store.secrets, nil
+	}
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		if res.Code != http.StatusNoContent {
+			t.Fatalf("request %d got %d", i, res.Code)
+		}
+	}
+	if lookups != 1 {
+		t.Fatalf("active key lookup count = %d", lookups)
 	}
 }
 

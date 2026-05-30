@@ -60,6 +60,7 @@ func NewRouter(server *Server, authMiddleware func(http.Handler) http.Handler) h
 		r.Get("/models", server.Models)
 		r.Get("/models/catalog", server.ModelCatalog)
 		r.Post("/models/pull", server.PullModel)
+		r.Get("/models/pull/*", server.PullModelStatus)
 		r.Get("/hardware", server.Hardware)
 		r.Get("/stats", server.Stats)
 		r.Get("/logs", server.Logs)

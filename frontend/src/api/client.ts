@@ -239,7 +239,7 @@ export class GatewayAPIError extends Error {
 
 const client = axios.create({
   baseURL: '/v1',
-  timeout: 30000,
+  timeout: 0,
 });
 
 let currentAuthToken = '';
@@ -315,12 +315,12 @@ export function setAuthToken(token: string): void {
 }
 
 export async function getHardware(): Promise<HardwareInfo> {
-  const res = await client.get<HardwareInfo>('/hardware');
+  const res = await client.get<HardwareInfo>('/hardware', { timeout: 30000 });
   return res.data;
 }
 
 export async function getModels(): Promise<ModelInfo[]> {
-  const res = await client.get<ModelListResponse>('/models');
+  const res = await client.get<ModelListResponse>('/models', { timeout: 30000 });
   return res.data.data;
 }
 
@@ -337,37 +337,42 @@ export async function pullModel(model: string): Promise<PullJob> {
   return res.data;
 }
 
+export async function getPullJob(model: string): Promise<PullJob> {
+  const res = await client.get<PullJob>(`/models/pull/${encodeURIComponent(model)}`, { timeout: 10000 });
+  return res.data;
+}
+
 export async function getStats(): Promise<StatsResponse> {
-  const res = await client.get<StatsResponse>('/stats');
+  const res = await client.get<StatsResponse>('/stats', { timeout: 30000 });
   return res.data;
 }
 
 export async function getLogs(limit: number, offset: number): Promise<LogsResponse> {
-  const res = await client.get<LogsResponse>('/logs', { params: { limit, offset } });
+  const res = await client.get<LogsResponse>('/logs', { params: { limit, offset }, timeout: 30000 });
   return res.data;
 }
 
 export async function getKeys(): Promise<APIKey[]> {
-  const res = await client.get<KeysResponse>('/keys');
+  const res = await client.get<KeysResponse>('/keys', { timeout: 30000 });
   return res.data.data;
 }
 
 export async function createKey(label: string): Promise<CreateKeyResponse> {
-  const res = await client.post<CreateKeyResponse>('/keys', { label });
+  const res = await client.post<CreateKeyResponse>('/keys', { label }, { timeout: 30000 });
   return res.data;
 }
 
 export async function revokeKey(id: string): Promise<void> {
-  await client.delete(`/keys/${encodeURIComponent(id)}`);
+  await client.delete(`/keys/${encodeURIComponent(id)}`, { timeout: 30000 });
 }
 
 export async function getConfig(): Promise<ConfigResponse> {
-  const res = await client.get<ConfigResponse>('/config');
+  const res = await client.get<ConfigResponse>('/config', { timeout: 30000 });
   return res.data;
 }
 
 export async function patchConfig(patch: ConfigPatch): Promise<ConfigResponse> {
-  const res = await client.patch<ConfigResponse>('/config', patch);
+  const res = await client.patch<ConfigResponse>('/config', patch, { timeout: 30000 });
   return res.data;
 }
 
@@ -418,6 +423,7 @@ export async function streamChatCompletion(
   const decoder = new TextDecoder();
   let buffer = '';
   let content = '';
+  const promptTokens = estimateMessages(messages);
 
   while (true) {
     const { value, done } = await reader.read();
@@ -454,11 +460,23 @@ export async function streamChatCompletion(
     routedModel: response.headers.get('X-Aegis-Routed-Model') ?? model,
     fallback: response.headers.get('X-Aegis-Fallback') === 'true',
     usage: {
-      prompt_tokens: 0,
-      completion_tokens: Math.max(0, Math.ceil(content.length / 4)),
-      total_tokens: Math.max(0, Math.ceil(content.length / 4)),
+      prompt_tokens: promptTokens,
+      completion_tokens: estimateText(content),
+      total_tokens: promptTokens + estimateText(content),
     },
   };
+}
+
+function estimateMessages(messages: ChatMessage[]): number {
+  return messages.reduce((total, message) => total + estimateText(message.role) + estimateText(message.content), 0);
+}
+
+function estimateText(value: string): number {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(Array.from(trimmed).length / 4));
 }
 
 async function readAPIError(response: Response): Promise<GatewayAPIError> {
