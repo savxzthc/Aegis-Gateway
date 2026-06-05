@@ -17,9 +17,14 @@ const (
 
 // APIKeySecret contains stored hash material for active API keys.
 type APIKeySecret struct {
-	ID   string
-	Salt string
-	Hash string
+	ID              string
+	Salt            string
+	Hash            string
+	KeyRole         string
+	RateLimitRPM    int
+	MaxPromptTokens int
+	AllowedIPs      string
+	OwnerID         string
 }
 
 // NewAPIKey contains fields required to store a generated key.
@@ -28,17 +33,24 @@ type NewAPIKey struct {
 	Label     string
 	Salt      string
 	Hash      string
+	KeyRole   string
+	OwnerID   string
 	CreatedAt time.Time
 }
 
 // APIKeyView is the dashboard-safe representation of an API key.
 type APIKeyView struct {
-	ID            string     `json:"id"`
-	Label         string     `json:"label"`
-	CreatedAt     time.Time  `json:"created_at"`
-	LastUsed      *time.Time `json:"last_used"`
-	RequestsTotal int64      `json:"requests_total"`
-	AllowedModels []string   `json:"allowed_models"`
+	ID             string     `json:"id"`
+	Label          string     `json:"label"`
+	KeyRole        string     `json:"key_role"`
+	OwnerID        *string    `json:"owner_id,omitempty"`
+	RateLimitRPM   int        `json:"rate_limit_rpm"`
+	MaxPromptTokens int       `json:"max_prompt_tokens"`
+	AllowedIPs     []string   `json:"allowed_ips"`
+	CreatedAt      time.Time  `json:"created_at"`
+	LastUsed       *time.Time `json:"last_used"`
+	RequestsTotal  int64      `json:"requests_total"`
+	AllowedModels  []string   `json:"allowed_models"`
 }
 
 // RequestLog contains privacy-preserving request metadata.
@@ -105,14 +117,32 @@ func (s *Store) HealthCheck(ctx context.Context) error {
 
 // CreateAPIKey stores a new hashed API key.
 func (s *Store) CreateAPIKey(ctx context.Context, key NewAPIKey) error {
+	role := key.KeyRole
+	if role == "" {
+		role = "inference"
+	}
+	var ownerID interface{} = nil
+	if key.OwnerID != "" {
+		ownerID = key.OwnerID
+	}
 	_, err := s.conn.ExecContext(ctx, `
-		INSERT INTO api_keys (id, label, salt, hash, created_at, requests_total)
-		VALUES (?, ?, ?, ?, ?, 0)
-	`, key.ID, key.Label, key.Salt, key.Hash, formatTime(key.CreatedAt))
+		INSERT INTO api_keys (id, label, salt, hash, created_at, requests_total, key_role, owner_id)
+		VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+	`, key.ID, key.Label, key.Salt, key.Hash, formatTime(key.CreatedAt), role, ownerID)
 	if err == nil {
 		s.invalidateActiveKeySecrets()
 	}
 	return err
+}
+
+// UpdateKeyRateLimit sets the per-key RPM override. 0 = inherit global.
+func (s *Store) UpdateKeyRateLimit(ctx context.Context, id string, rpm int) (bool, error) {
+	res, err := s.conn.ExecContext(ctx, `UPDATE api_keys SET rate_limit_rpm = ? WHERE id = ? AND revoked_at IS NULL`, rpm, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // ResetAPIKeys revokes every active API key and stores one replacement key.
@@ -158,7 +188,7 @@ func (s *Store) ActiveKeySecrets(ctx context.Context) ([]APIKeySecret, error) {
 	s.activeKeysMu.RUnlock()
 
 	rows, err := s.conn.QueryContext(ctx, `
-		SELECT id, salt, hash
+		SELECT id, salt, hash, COALESCE(key_role,'inference'), COALESCE(rate_limit_rpm,0), COALESCE(max_prompt_tokens,0), COALESCE(allowed_ips,''), COALESCE(owner_id,'')
 		FROM api_keys
 		WHERE revoked_at IS NULL
 		ORDER BY created_at ASC
@@ -171,7 +201,7 @@ func (s *Store) ActiveKeySecrets(ctx context.Context) ([]APIKeySecret, error) {
 	var keys []APIKeySecret
 	for rows.Next() {
 		var key APIKeySecret
-		if err := rows.Scan(&key.ID, &key.Salt, &key.Hash); err != nil {
+		if err := rows.Scan(&key.ID, &key.Salt, &key.Hash, &key.KeyRole, &key.RateLimitRPM, &key.MaxPromptTokens, &key.AllowedIPs, &key.OwnerID); err != nil {
 			return nil, err
 		}
 		keys = append(keys, key)
@@ -188,12 +218,28 @@ func (s *Store) ActiveKeySecrets(ctx context.Context) ([]APIKeySecret, error) {
 
 // ListAPIKeys returns dashboard-safe active API keys.
 func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKeyView, error) {
-	rows, err := s.conn.QueryContext(ctx, `
-		SELECT id, label, created_at, last_used, requests_total
-		FROM api_keys
-		WHERE revoked_at IS NULL
-		ORDER BY created_at DESC
-	`)
+	return s.listAPIKeysFiltered(ctx, "", "")
+}
+
+// ListAPIKeysByOwner returns active API keys owned by a specific user.
+func (s *Store) ListAPIKeysByOwner(ctx context.Context, ownerID string) ([]APIKeyView, error) {
+	return s.listAPIKeysFiltered(ctx, ownerID, "")
+}
+
+func (s *Store) listAPIKeysFiltered(ctx context.Context, ownerID, keyRole string) ([]APIKeyView, error) {
+	query := `SELECT id, label, key_role, owner_id, rate_limit_rpm, max_prompt_tokens, allowed_ips, created_at, last_used, requests_total
+		FROM api_keys WHERE revoked_at IS NULL`
+	var args []interface{}
+	if ownerID != "" {
+		query += ` AND owner_id = ?`
+		args = append(args, ownerID)
+	}
+	if keyRole != "" {
+		query += ` AND key_role = ?`
+		args = append(args, keyRole)
+	}
+	query += ` ORDER BY created_at DESC`
+	rows, err := s.conn.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +250,9 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKeyView, error) {
 		var key APIKeyView
 		var created string
 		var last sql.NullString
-		if err := rows.Scan(&key.ID, &key.Label, &created, &last, &key.RequestsTotal); err != nil {
+		var ownerIDNull sql.NullString
+		var allowedIPsNull sql.NullString
+		if err := rows.Scan(&key.ID, &key.Label, &key.KeyRole, &ownerIDNull, &key.RateLimitRPM, &key.MaxPromptTokens, &allowedIPsNull, &created, &last, &key.RequestsTotal); err != nil {
 			return nil, err
 		}
 		createdAt, err := parseTime(created)
@@ -218,6 +266,15 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKeyView, error) {
 				return nil, err
 			}
 			key.LastUsed = &lastUsed
+		}
+		if ownerIDNull.Valid {
+			key.OwnerID = &ownerIDNull.String
+		}
+		if allowedIPsNull.Valid && allowedIPsNull.String != "" {
+			key.AllowedIPs = splitCIDRs(allowedIPsNull.String)
+		}
+		if key.AllowedIPs == nil {
+			key.AllowedIPs = []string{}
 		}
 		keys = append(keys, key)
 	}
@@ -235,6 +292,24 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKeyView, error) {
 		keys[i].AllowedModels = models
 	}
 	return keys, nil
+}
+
+func splitCIDRs(s string) []string {
+	if s == "" {
+		return []string{}
+	}
+	var out []string
+	start := 0
+	for i := 0; i <= len(s); i++ {
+		if i == len(s) || s[i] == ',' {
+			part := s[start:i]
+			if part != "" {
+				out = append(out, part)
+			}
+			start = i + 1
+		}
+	}
+	return out
 }
 
 // APIKeyAllowedModels returns the model allowlist for a key. An empty list means all registered models are allowed.

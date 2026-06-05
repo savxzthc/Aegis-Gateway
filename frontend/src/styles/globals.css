@@ -3,15 +3,15 @@
 @tailwind utilities;
 
 :root {
-  --bg-base: #0d0f12;
-  --bg-surface: #161920;
-  --bg-elevated: #1e2128;
-  --border: #2a2d35;
-  --text-primary: #e8eaf0;
-  --text-muted: #6b7280;
-  --accent: #00d4aa;
-  --accent-dim: #00d4aa22;
-  --warn: #f59e0b;
+  --bg-base: #0a0a0a;
+  --bg-surface: #0f0f0f;
+  --bg-elevated: #161616;
+  --border: #1f1f1f;
+  --text-primary: #d4d4d4;
+  --text-muted: #525252;
+  --accent: #f59e0b;
+  --accent-dim: #f59e0b10;
+  --warn: #f97316;
   --danger: #ef4444;
   --success: #22c55e;
 }
@@ -30,12 +30,14 @@ body {
   margin: 0;
   background: var(--bg-base);
   color: var(--text-primary);
-  font-family: 'DM Sans';
+  font-family: 'JetBrains Mono', monospace;
   letter-spacing: 0;
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -45,53 +47,53 @@ button {
 
 ::selection {
   background: var(--accent-dim);
-  color: var(--text-primary);
+  color: var(--accent);
 }
 
 .vram-progress {
   appearance: none;
   border: 0;
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--bg-elevated);
 }
 
 .vram-progress::-webkit-progress-bar {
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--bg-elevated);
 }
 
 .vram-progress::-webkit-progress-value {
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--accent);
 }
 
 .vram-progress::-moz-progress-bar {
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--accent);
 }
 
 @layer components {
   .panel {
-    @apply rounded-panel border border-border bg-surface;
+    @apply border border-border bg-surface;
   }
 
   .icon-button {
-    @apply inline-flex h-9 w-9 items-center justify-center rounded-panel border border-border bg-elevated text-primary transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40;
+    @apply inline-flex h-8 w-8 items-center justify-center border border-border bg-elevated text-primary transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40;
   }
 
   .command-button {
-    @apply inline-flex h-9 items-center gap-2 rounded-panel border border-border bg-elevated px-3 text-sm font-medium text-primary transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40;
+    @apply inline-flex h-8 items-center gap-1.5 border border-border bg-elevated px-3 text-xs font-medium text-primary transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40;
   }
 
   .danger-button {
-    @apply inline-flex h-9 items-center gap-2 rounded-panel border border-danger bg-elevated px-3 text-sm font-medium text-danger transition hover:bg-base disabled:cursor-not-allowed disabled:opacity-40;
+    @apply inline-flex h-8 items-center gap-1.5 border border-danger bg-elevated px-3 text-xs font-medium text-danger transition hover:bg-base disabled:cursor-not-allowed disabled:opacity-40;
   }
 
   .field {
-    @apply h-10 rounded-panel border border-border bg-base px-3 text-sm text-primary outline-none transition placeholder:text-muted focus:border-accent;
+    @apply h-9 border border-border bg-base px-3 text-sm text-primary outline-none transition placeholder:text-muted focus:border-accent;
   }
 
   .pill {
-    @apply inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-medium;
+    @apply inline-flex items-center gap-1 border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider;
   }
 }

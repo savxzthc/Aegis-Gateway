@@ -15,6 +15,12 @@ type Backend interface {
 	Ping(ctx context.Context) error
 }
 
+// EmbeddingBackend is an optional interface for backends that support embeddings.
+type EmbeddingBackend interface {
+	Backend
+	Embed(ctx context.Context, model string, inputs []string) ([][]float64, error)
+}
+
 // ChatMessage is an OpenAI-compatible chat message.
 type ChatMessage struct {
 	Role    string         `json:"role"`

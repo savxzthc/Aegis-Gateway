@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/savxzthc/aegis-gateway/internal/api"
 	"github.com/savxzthc/aegis-gateway/internal/auth"
 	"github.com/savxzthc/aegis-gateway/internal/backends"
@@ -27,11 +28,15 @@ import (
 	"github.com/savxzthc/aegis-gateway/internal/db"
 	"github.com/savxzthc/aegis-gateway/internal/hardware"
 	"github.com/savxzthc/aegis-gateway/internal/lifecycle"
+	"github.com/savxzthc/aegis-gateway/internal/metrics"
 	modelrouter "github.com/savxzthc/aegis-gateway/internal/router"
 )
 
 //go:embed frontend/dist
 var frontend embed.FS
+
+//go:embed mobile/mobile.html
+var mobileHTML []byte
 
 var (
 	version   = "dev"
@@ -41,7 +46,8 @@ var (
 var probeHTTPClient = &http.Client{Timeout: 3 * time.Second}
 
 func main() {
-	resetAdminKey := flag.Bool("reset-admin-key", false, "revoke all active API keys, create one replacement key, print it once, and exit")
+	resetAdmin := flag.Bool("reset-admin", false, "reset admin password and API key, print them once, and exit")
+	resetAdminKey := flag.Bool("reset-admin-key", false, "legacy: same as --reset-admin")
 	flag.Parse()
 
 	cfg, err := config.LoadManager("config.toml")
@@ -63,7 +69,7 @@ func main() {
 	if err := store.PruneOldMetadata(ctx, time.Now().UTC()); err != nil {
 		log.Fatalf("metadata retention: %v", err)
 	}
-	if *resetAdminKey {
+	if *resetAdmin || *resetAdminKey {
 		raw, err := resetAdminAPIKey(ctx, store)
 		if err != nil {
 			log.Fatalf("reset admin key: %v", err)
@@ -74,6 +80,9 @@ func main() {
 	activeKeyCount, err := ensureFirstKey(ctx, cfg, store)
 	if err != nil {
 		log.Fatalf("first key: %v", err)
+	}
+	if err := ensureFirstUser(ctx, store); err != nil {
+		log.Fatalf("first user: %v", err)
 	}
 	listener, listenInfo, err := openGatewayListener(cfg)
 	if err != nil {
@@ -100,20 +109,37 @@ func main() {
 		}
 		ollamaCancel()
 	}
+	backendMap := map[string]backends.Backend{
+		"ollama":   backends.NewOllamaBackend(cfg.Get().Backend.OllamaBaseURL),
+		"llamacpp": backends.NewLlamaCppBackend(cfg.Get().Backend.LlamaCppBaseURL),
+	}
+	if b, err := buildOpenAIBackend(cfg.Get()); err != nil {
+		listenInfo.Warnings = append(listenInfo.Warnings, "OpenAI backend: "+err.Error())
+	} else if b != nil {
+		backendMap["openai"] = b
+	}
+	if b, err := buildOpenRouterBackend(cfg.Get()); err != nil {
+		listenInfo.Warnings = append(listenInfo.Warnings, "OpenRouter backend: "+err.Error())
+	} else if b != nil {
+		backendMap["openrouter"] = b
+	}
+	if b, err := buildAnthropicBackend(cfg.Get()); err != nil {
+		listenInfo.Warnings = append(listenInfo.Warnings, "Anthropic backend: "+err.Error())
+	} else if b != nil {
+		backendMap["anthropic"] = b
+	}
+
 	app := &api.Server{
 		Config:           cfg,
 		DB:               store,
 		HardwareProvider: gpu,
 		VRAMRouter:       modelrouter.NewVRAMRouter(cfg, gpu),
 		Lifecycle:        lifecycleManager,
-		Backends: map[string]backends.Backend{
-			"ollama":   backends.NewOllamaBackend(cfg.Get().Backend.OllamaBaseURL),
-			"llamacpp": backends.NewLlamaCppBackend(cfg.Get().Backend.LlamaCppBaseURL),
-		},
-		StartedAt: time.Now().UTC(),
-		Version:   version,
-		BuildTime: buildTime,
-		GoVersion: runtime.Version(),
+		Backends:         backendMap,
+		StartedAt:        time.Now().UTC(),
+		Version:          version,
+		BuildTime:        buildTime,
+		GoVersion:        runtime.Version(),
 	}
 	listenInfo.Warnings = append(listenInfo.Warnings, backendReachabilityWarnings(app)...)
 	shutdownStreams := make(chan struct{})
@@ -146,8 +172,35 @@ func main() {
 		errCh <- server.Serve(listener)
 	}()
 
+	metrics.StartCollection(app.HardwareProvider)
+	if addr := cfg.Get().Backend.MetricsAddr; addr != "" {
+		go func() {
+			mux := http.NewServeMux()
+			mux.Handle("/metrics", promhttp.Handler())
+			if err := http.ListenAndServe(addr, mux); err != nil {
+				log.Printf("aegis: metrics server: %v", err)
+			}
+		}()
+	}
+
 	stop := make(chan os.Signal, 1)
+	reload := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(reload, syscall.SIGHUP)
+	go func() {
+		for range reload {
+			warnings, err := cfg.Reload()
+			if err != nil {
+				log.Printf("aegis: config reload failed: %v", err)
+				continue
+			}
+			log.Printf("aegis: config reloaded")
+			for _, w := range warnings {
+				log.Printf("aegis: reload warning: %s", w)
+			}
+		}
+	}()
+
 	select {
 	case sig := <-stop:
 		log.Printf("received %s, shutting down", sig)
@@ -517,6 +570,21 @@ func rootHandler(apiHandler http.Handler, store readinessStore) (http.Handler, e
 		}
 		writeRootJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
+	mux.HandleFunc("/mobile", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			writeRootJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed", "code": "METHOD_NOT_ALLOWED"})
+			return
+		}
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, no-store")
+		_, _ = w.Write(mobileHTML)
+	})
+	mux.HandleFunc("/m", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/mobile", http.StatusFound)
+	})
 	mux.Handle("/v1/", apiHandler)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/") {
@@ -612,6 +680,7 @@ func printBanner(url string, cfg config.Config, warnings []string, activeKeyCoun
 		fmt.Printf("warning: %s\n", warning)
 	}
 	fmt.Printf("dashboard: %s\n", url)
+	fmt.Printf("mobile:    %s/mobile\n", url)
 	fmt.Printf("version: %s\n", version)
 	fmt.Printf("build time: %s\n", buildTime)
 	fmt.Printf("active API keys: %d\n", activeKeyCount)
@@ -660,6 +729,80 @@ func printInitialKey(key string) {
 	fmt.Println("| Save this key now. It is stored hashed and shown only once. |")
 	fmt.Println("+-------------------------------------------------------------+")
 	fmt.Printf("%s\n", key)
+	fmt.Println("+-------------------------------------------------------------+")
+	fmt.Println()
+}
+
+func ensureFirstUser(ctx context.Context, store *db.Store) error {
+	count, err := store.CountUsers(ctx)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	password, err := auth.GenerateKey()
+	if err != nil {
+		return err
+	}
+	password = password[:16]
+	hash, salt, err := auth.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	id, err := auth.GenerateID("usr")
+	if err != nil {
+		return err
+	}
+	if err := store.CreateUser(ctx, db.User{
+		ID:        id,
+		Username:  "admin",
+		Hash:      hash,
+		Salt:      salt,
+		Role:      "admin",
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		return err
+	}
+	printInitialUser("admin", password)
+	return nil
+}
+
+func buildOpenAIBackend(cfg config.Config) (backends.Backend, error) {
+	key := strings.TrimSpace(cfg.Backend.OpenAI.APIKey)
+	if key == "" {
+		key = os.Getenv("OPENAI_API_KEY")
+	}
+	if key == "" {
+		return nil, nil
+	}
+	return backends.NewOpenAIBackend(key, cfg.Backend.OpenAI.BaseURL)
+}
+
+func buildOpenRouterBackend(cfg config.Config) (backends.Backend, error) {
+	key := strings.TrimSpace(cfg.Backend.OpenRouter.APIKey)
+	if key == "" {
+		return nil, nil
+	}
+	return backends.NewOpenRouterBackend(key, cfg.Backend.OpenRouter.SiteURL, cfg.Backend.OpenRouter.SiteName)
+}
+
+func buildAnthropicBackend(cfg config.Config) (backends.Backend, error) {
+	key := strings.TrimSpace(cfg.Backend.Anthropic.APIKey)
+	if key == "" {
+		return nil, nil
+	}
+	return backends.NewAnthropicBackend(key, cfg.Backend.Anthropic.BaseURL, cfg.Backend.Anthropic.AnthropicVersion)
+}
+
+func printInitialUser(username, password string) {
+	fmt.Println()
+	fmt.Println("+-------------------------------------------------------------+")
+	fmt.Println("| Aegis Gateway initial admin account                         |")
+	fmt.Println("| Save these credentials. Password is shown only once.        |")
+	fmt.Println("+-------------------------------------------------------------+")
+	fmt.Printf("username: %s\n", username)
+	fmt.Printf("password: %s\n", password)
 	fmt.Println("+-------------------------------------------------------------+")
 	fmt.Println()
 }

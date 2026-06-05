@@ -1,4 +1,4 @@
-import { KeyRound, ShieldCheck } from 'lucide-react';
+import { KeyRound, ShieldCheck, TriangleAlert } from 'lucide-react';
 import { Component, ErrorInfo, FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
 import ChatConsole from './components/ChatConsole';
@@ -12,11 +12,11 @@ import TemplateLibrary from './components/TemplateLibrary';
 import { useGatewayStore } from './store/useGatewayStore';
 
 const titles: Record<ViewKey, string> = {
-  chat: 'Chat',
+  chat: 'Chat Console',
   dashboard: 'Dashboard',
   models: 'Models',
   templates: 'Templates',
-  logs: 'Audit Logs',
+  logs: 'Audit Log',
   keys: 'API Keys',
   settings: 'Settings',
 };
@@ -75,37 +75,48 @@ function AppContent(): JSX.Element {
 
     return (
       <div className="flex min-h-screen items-center justify-center bg-base p-6 text-primary">
-        <Toaster position="bottom-right" toastOptions={{ className: 'font-sans' }} />
-        <form className="panel w-full max-w-[440px] p-6" onSubmit={submit}>
-          <div className="mb-6 flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-panel border border-accent bg-[var(--accent-dim)] text-accent">
-              <ShieldCheck className="h-5 w-5" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold">Aegis Gateway</h1>
-              <p className="mt-1 text-sm text-muted">Enter a local API key to open mission control.</p>
-            </div>
+        <Toaster position="bottom-right" />
+        <div className="w-full max-w-[420px]">
+          <div className="mb-1 flex items-center gap-2 text-[10px] uppercase tracking-widest text-muted">
+            <ShieldCheck className="h-3 w-3" />
+            <span>Aegis Gateway</span>
           </div>
-          <label className="mb-2 block text-sm text-muted" htmlFor="api-key">
-            API key
-          </label>
-          <div className="flex gap-2">
-            <input
-              id="api-key"
-              className="field min-w-0 flex-1 font-mono"
-              type="password"
-              value={inputToken}
-              onChange={(event) => setInputToken(event.target.value)}
-            />
-            <button className="command-button" type="submit">
-              <KeyRound className="h-4 w-4" />
-              Unlock
-            </button>
+          <div className="border border-border bg-surface">
+            <div className="border-b border-border px-5 py-4">
+              <div className="text-xs uppercase tracking-widest text-accent">Authentication Required</div>
+              <div className="mt-1 text-[10px] uppercase tracking-widest text-muted">Enter a local API key to access mission control</div>
+            </div>
+            <form className="px-5 py-5" onSubmit={submit}>
+              <label className="mb-1.5 block text-[10px] uppercase tracking-widest text-muted" htmlFor="api-key">
+                API Key
+              </label>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-accent">&gt;_</div>
+                  <input
+                    id="api-key"
+                    className="field w-full pl-9"
+                    type="password"
+                    placeholder="aegis-..."
+                    value={inputToken}
+                    onChange={(event) => setInputToken(event.target.value)}
+                    autoFocus
+                  />
+                </div>
+                <button className="command-button" type="submit">
+                  <KeyRound className="h-3.5 w-3.5" />
+                  Unlock
+                </button>
+              </div>
+              <div className="mt-4 border border-border bg-elevated px-3 py-2.5">
+                <div className="text-[10px] uppercase tracking-widest text-muted">Recovery</div>
+                <code className="mt-1 block text-xs text-muted">
+                  .\aegis-gateway.exe --reset-admin-key
+                </code>
+              </div>
+            </form>
           </div>
-          <p className="mt-4 text-xs leading-5 text-muted">
-            Lost the key? Stop Aegis, run <span className="font-mono text-primary">.\aegis-gateway.exe --reset-admin-key</span>, then paste the new key here.
-          </p>
-        </form>
+        </div>
       </div>
     );
   }
@@ -117,7 +128,7 @@ function AppContent(): JSX.Element {
 
   return (
     <>
-      <Toaster position="bottom-right" toastOptions={{ className: 'font-sans' }} />
+      <Toaster position="bottom-right" />
       <Layout
         activeView={view}
         connected={connected}
@@ -156,24 +167,31 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { error: Error
     if (this.state.error) {
       return (
         <div className="flex min-h-screen items-center justify-center bg-base p-6 text-primary">
-          <div className="panel w-full max-w-[520px] p-6">
-            <div className="mb-2 text-xl font-bold">Aegis Dashboard</div>
-            <p className="text-sm leading-6 text-muted">
-              The dashboard hit a local browser-state error. Clear the saved key and reload, then paste your current API key again.
-            </p>
-            <code className="mt-4 block break-all rounded-panel border border-border bg-base p-3 font-mono text-xs text-danger">
-              {this.state.error.message}
-            </code>
-            <button
-              className="command-button mt-5"
-              type="button"
-              onClick={() => {
-                window.localStorage.removeItem('aegis_api_key');
-                window.location.reload();
-              }}
-            >
-              Clear saved key and reload
-            </button>
+          <div className="w-full max-w-[520px] border border-danger bg-surface">
+            <div className="border-b border-border px-5 py-3">
+              <div className="flex items-center gap-2 text-xs uppercase tracking-widest text-danger">
+                <TriangleAlert className="h-3.5 w-3.5" />
+                Dashboard Error
+              </div>
+            </div>
+            <div className="px-5 py-4">
+              <p className="text-xs leading-6 text-muted">
+                The dashboard hit a local browser-state error. Clear the saved key and reload, then paste your current API key again.
+              </p>
+              <div className="mt-3 border border-border bg-elevated px-3 py-2">
+                <code className="block break-all text-xs text-danger">{this.state.error.message}</code>
+              </div>
+              <button
+                className="command-button mt-4"
+                type="button"
+                onClick={() => {
+                  window.localStorage.removeItem('aegis_api_key');
+                  window.location.reload();
+                }}
+              >
+                Clear saved key and reload
+              </button>
+            </div>
           </div>
         </div>
       );

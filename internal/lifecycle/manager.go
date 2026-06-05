@@ -185,6 +185,22 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// ForceUnload immediately unloads a model from VRAM.
+func (m *Manager) ForceUnload(model string) error {
+	m.mu.Lock()
+	entry := m.entryLocked(model)
+	if entry.timer != nil {
+		entry.timer.Stop()
+		entry.timer = nil
+	}
+	entry.state = StateUnloaded
+	m.notifyReadyLocked(entry)
+	m.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), m.unloadTimeout)
+	defer cancel()
+	return m.unloadWithContext(ctx, model)
+}
+
 // Status returns the current model lifecycle state.
 func (m *Manager) Status(model string) State {
 	m.mu.RLock()

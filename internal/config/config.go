@@ -39,14 +39,39 @@ type SecurityConfig struct {
 
 // BackendConfig contains backend connection settings.
 type BackendConfig struct {
-	DefaultType     string `toml:"default_type" json:"default_type"`
-	OllamaBaseURL   string `toml:"ollama_base_url" json:"ollama_base_url"`
-	LlamaCppBaseURL string `toml:"llamacpp_base_url" json:"llamacpp_base_url"`
+	DefaultType        string        `toml:"default_type" json:"default_type"`
+	OllamaBaseURL      string        `toml:"ollama_base_url" json:"ollama_base_url"`
+	LlamaCppBaseURL    string        `toml:"llamacpp_base_url" json:"llamacpp_base_url"`
+	OpenAI             OpenAIConfig  `toml:"openai" json:"openai"`
+	OpenRouter         OpenRouterConfig `toml:"openrouter" json:"openrouter"`
+	Anthropic          AnthropicConfig `toml:"anthropic" json:"anthropic"`
+	MetricsAddr        string        `toml:"metrics_addr" json:"metrics_addr"`
+}
+
+// OpenAIConfig contains OpenAI backend settings.
+type OpenAIConfig struct {
+	APIKey  string `toml:"api_key" json:"-"`
+	BaseURL string `toml:"base_url" json:"base_url"`
+}
+
+// OpenRouterConfig contains OpenRouter backend settings.
+type OpenRouterConfig struct {
+	APIKey   string `toml:"api_key" json:"-"`
+	SiteURL  string `toml:"site_url" json:"site_url"`
+	SiteName string `toml:"site_name" json:"site_name"`
+}
+
+// AnthropicConfig contains Anthropic backend settings.
+type AnthropicConfig struct {
+	APIKey            string `toml:"api_key" json:"-"`
+	BaseURL           string `toml:"base_url" json:"base_url"`
+	AnthropicVersion  string `toml:"anthropic_version" json:"anthropic_version"`
 }
 
 // ModelsConfig contains the model registry.
 type ModelsConfig struct {
 	Registry map[string]ModelConfig `toml:"registry" json:"registry"`
+	Aliases  map[string]string      `toml:"aliases" json:"aliases"`
 }
 
 // ModelConfig describes a known model.
@@ -141,6 +166,14 @@ func LoadManager(path string) (*Manager, error) {
 	return &Manager{path: path, cfg: cfg}, nil
 }
 
+// NewManagerFromConfig creates a Manager from an already-validated Config (used in tests).
+func NewManagerFromConfig(cfg Config) (*Manager, error) {
+	if err := Validate(&cfg); err != nil {
+		return nil, err
+	}
+	return &Manager{path: "", cfg: cfg}, nil
+}
+
 // Get returns a copy of the current configuration.
 func (m *Manager) Get() Config {
 	m.mu.RLock()
@@ -181,6 +214,37 @@ func (m *Manager) SetRuntimeOllamaBaseURL(baseURL string) error {
 	}
 	m.cfg = next
 	return nil
+}
+
+// Reload re-reads config.toml from disk and atomically replaces the stored config.
+// Returns any warnings (e.g. port/host change requires restart).
+func (m *Manager) Reload() ([]string, error) {
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+
+	cfg := Defaults()
+	if _, err := os.Stat(m.path); err == nil {
+		if _, err := toml.DecodeFile(m.path, &cfg); err != nil {
+			return nil, fmt.Errorf("reload: %w", err)
+		}
+	}
+	if err := Validate(&cfg); err != nil {
+		return nil, fmt.Errorf("reload: %w", err)
+	}
+
+	m.mu.RLock()
+	current := m.cfg
+	m.mu.RUnlock()
+
+	var warnings []string
+	if cfg.Server.Port != current.Server.Port || cfg.Server.Host != current.Server.Host {
+		warnings = append(warnings, "port/host changes require a restart to take effect")
+	}
+
+	m.mu.Lock()
+	m.cfg = cfg
+	m.mu.Unlock()
+	return warnings, nil
 }
 
 // PatchEditable updates supported dashboard settings and writes config.toml.

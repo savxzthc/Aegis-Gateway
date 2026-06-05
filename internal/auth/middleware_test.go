@@ -38,6 +38,14 @@ func (s *authStoreStub) MarkKeyUsed(ctx context.Context, id string, at time.Time
 	return s.markUsedErr
 }
 
+func (s *authStoreStub) GetSession(ctx context.Context, token string) (*db.Session, error) {
+	return nil, nil
+}
+
+func (s *authStoreStub) GetUserByID(ctx context.Context, id string) (*db.User, error) {
+	return nil, nil
+}
+
 func TestMiddlewareAuthenticatesAndInjectsKeyID(t *testing.T) {
 	key := "secret"
 	salt := "salt"
@@ -75,7 +83,7 @@ func TestMatchKeyIDScansAllSecrets(t *testing.T) {
 		{ID: "key_3", Salt: "salt-3", Hash: HashKey("different", "salt-3")},
 	}
 
-	id := matchKeyID(key, secrets)
+	id, _ := matchKeyWithMeta(key, secrets)
 	if id != "key_2" {
 		t.Fatalf("got key id %q", id)
 	}
@@ -119,8 +127,8 @@ func TestTokenCachePrunesExpiredEntries(t *testing.T) {
 	mw := NewMiddleware(&authStoreStub{}, NewRateLimiter(), func() int { return 60 })
 	defer mw.Stop()
 	now := time.Date(2026, 5, 29, 0, 0, 0, 0, time.UTC)
-	mw.cacheKeyID("expired", "key_old", now.Add(-time.Second))
-	mw.cacheKeyID("fresh", "key_new", now.Add(time.Second))
+	mw.cacheKeyID("expired", "key_old", db.APIKeySecret{}, now.Add(-time.Second))
+	mw.cacheKeyID("fresh", "key_new", db.APIKeySecret{}, now.Add(time.Second))
 	mw.cacheMu.Lock()
 	mw.pruneTokenCacheLocked(now)
 	count := len(mw.tokenCache)
@@ -128,7 +136,7 @@ func TestTokenCachePrunesExpiredEntries(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("cache count = %d, want 1", count)
 	}
-	if got, ok := mw.cachedKeyID("fresh", now); !ok || got != "key_new" {
+	if got, _, ok := mw.cachedKeyID("fresh", now); !ok || got != "key_new" {
 		t.Fatalf("fresh cache entry missing: got=%q ok=%v", got, ok)
 	}
 }

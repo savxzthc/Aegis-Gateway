@@ -133,6 +133,35 @@ func (s *Server) DeleteKey(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// UpdateKeyRateLimit handles PATCH /v1/keys/{id}/rate-limit — admin only.
+func (s *Server) UpdateKeyRateLimit(w http.ResponseWriter, r *http.Request) {
+	if !requireRole(w, r, "admin") {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	var req struct {
+		RateLimitRPM int `json:"rate_limit_rpm"`
+	}
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", "INVALID_JSON")
+		return
+	}
+	if req.RateLimitRPM < 0 {
+		writeError(w, http.StatusBadRequest, "rate_limit_rpm must be zero or greater", "INVALID_REQUEST")
+		return
+	}
+	ok, err := s.DB.UpdateKeyRateLimit(r.Context(), id, req.RateLimitRPM)
+	if err != nil {
+		writePrivateError(w, r, http.StatusInternalServerError, "rate limit update failed", "RATE_LIMIT_UPDATE_FAILED", err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "key not found", "KEY_NOT_FOUND")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"id": id, "rate_limit_rpm": req.RateLimitRPM})
+}
+
 type keysResponse struct {
 	Data []db.APIKeyView `json:"data"`
 }
@@ -140,6 +169,7 @@ type keysResponse struct {
 type createKeyRequest struct {
 	Label         string   `json:"label"`
 	AllowedModels []string `json:"allowed_models"`
+	KeyRole       string   `json:"key_role"`
 }
 
 type updateKeyModelsRequest struct {

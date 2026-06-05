@@ -1,4 +1,4 @@
-import { BarChart3, Cpu, FileText, KeyRound, ListTree, MessageSquare, ScrollText, Settings } from 'lucide-react';
+import { BarChart3, Cpu, FileText, KeyRound, ListTree, LogOut, MessageSquare, ScrollText, Settings } from 'lucide-react';
 import { ReactNode } from 'react';
 
 export type ViewKey = 'chat' | 'dashboard' | 'models' | 'templates' | 'logs' | 'keys' | 'settings';
@@ -18,12 +18,12 @@ const navItems: Array<{
   label: string;
   icon: typeof BarChart3;
 }> = [
-  { key: 'chat', label: 'Chat', icon: MessageSquare },
+  { key: 'chat', label: 'Chat Console', icon: MessageSquare },
   { key: 'dashboard', label: 'Dashboard', icon: BarChart3 },
   { key: 'models', label: 'Models', icon: ListTree },
   { key: 'templates', label: 'Templates', icon: FileText },
-  { key: 'logs', label: 'Logs', icon: ScrollText },
-  { key: 'keys', label: 'Keys', icon: KeyRound },
+  { key: 'logs', label: 'Audit Log', icon: ScrollText },
+  { key: 'keys', label: 'API Keys', icon: KeyRound },
   { key: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -38,58 +38,68 @@ export default function Layout({
 }: LayoutProps): JSX.Element {
   return (
     <div className="min-h-screen bg-base text-primary">
-      <aside className="sticky top-0 z-20 flex w-full flex-col border-b border-border bg-surface md:fixed md:inset-y-0 md:left-0 md:w-[220px] md:border-b-0 md:border-r">
-        <div className="flex h-16 shrink-0 items-center gap-3 border-b border-border px-5 md:h-20">
-          <div className="flex h-9 w-9 items-center justify-center rounded-panel border border-accent bg-[var(--accent-dim)] text-accent">
-            <Cpu className="h-5 w-5" />
+      <aside className="sticky top-0 z-20 flex w-full flex-col border-b border-border bg-surface md:fixed md:inset-y-0 md:left-0 md:w-[200px] md:border-b-0 md:border-r">
+        <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center border border-accent bg-[var(--accent-dim)] text-accent">
+            <Cpu className="h-4 w-4" />
           </div>
-          <div>
-            <div className="text-lg font-bold leading-tight">Aegis</div>
-            <div className="font-mono text-xs text-muted">Gateway</div>
+          <div className="min-w-0">
+            <div className="text-sm font-bold tracking-widest text-accent">AEGIS</div>
+            <div className="text-[10px] uppercase tracking-widest text-muted">Gateway</div>
           </div>
         </div>
 
-        <nav className="flex gap-1 overflow-x-auto px-3 py-3 md:flex-1 md:flex-col md:space-y-1 md:overflow-visible md:py-4">
+        <nav className="flex gap-0.5 overflow-x-auto px-2 py-2 md:flex-1 md:flex-col md:overflow-visible md:py-3">
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = item.key === activeView;
             return (
               <button
                 key={item.key}
-                className={`flex h-10 shrink-0 items-center gap-3 rounded-panel px-3 text-left text-sm transition md:w-full ${
+                className={`flex h-9 shrink-0 items-center gap-2.5 border-l-2 px-3 text-left text-[11px] uppercase tracking-wider transition md:w-full ${
                   active
-                    ? 'bg-[var(--accent-dim)] text-accent'
-                    : 'text-muted hover:bg-elevated hover:text-primary'
+                    ? 'border-accent bg-[var(--accent-dim)] text-accent'
+                    : 'border-transparent text-muted hover:border-border hover:bg-elevated hover:text-primary'
                 }`}
                 type="button"
                 onClick={() => onNavigate(item.key)}
               >
-                <Icon className="h-4 w-4" />
+                <Icon className="h-3.5 w-3.5 shrink-0" />
                 <span>{item.label}</span>
               </button>
             );
           })}
         </nav>
 
-        <div className="flex items-center justify-between border-t border-border p-3 md:block md:p-4">
-          <button className="text-left text-xs text-muted transition hover:text-primary md:mb-3 md:w-full" type="button" onClick={onSignOut}>
+        <div className="border-t border-border px-4 py-3">
+          <button
+            className="mb-3 flex w-full items-center gap-2 text-[10px] uppercase tracking-widest text-muted transition hover:text-primary"
+            type="button"
+            onClick={onSignOut}
+          >
+            <LogOut className="h-3 w-3" />
             Sign out
           </button>
-          <div className="font-mono text-xs text-muted">v{version}</div>
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-muted">
+            <div className={`h-1.5 w-1.5 shrink-0 ${connected ? 'bg-success' : 'bg-muted'}`} />
+            <span>{connected ? 'Online' : 'Offline'}</span>
+            <span className="ml-auto">v{version}</span>
+          </div>
         </div>
       </aside>
 
-      <main className="min-h-screen bg-base p-4 md:ml-[220px] md:p-6">
-        <header className="mb-6 flex items-center justify-between">
+      <main className="min-h-screen bg-base md:ml-[200px]">
+        <header className="flex items-center justify-between border-b border-border px-5 py-3">
           <div>
-            <h1 className="text-2xl font-bold tracking-normal">{title}</h1>
-            <div className="mt-2 flex items-center gap-2 text-sm text-muted">
-              <span className={`h-2.5 w-2.5 rounded-full ${connected ? 'animate-pulse bg-success' : 'bg-muted'}`} />
-              <span>{connected ? 'Connected' : 'Disconnected'}</span>
-            </div>
+            <div className="text-[10px] uppercase tracking-widest text-muted">Aegis Gateway</div>
+            <h1 className="text-sm font-bold uppercase tracking-widest text-primary">{title}</h1>
+          </div>
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-muted">
+            <div className={`h-1.5 w-1.5 shrink-0 ${connected ? 'animate-pulse bg-success' : 'bg-muted'}`} />
+            <span>{connected ? 'Connected' : 'Disconnected'}</span>
           </div>
         </header>
-        {children}
+        <div className="p-4 md:p-5">{children}</div>
       </main>
     </div>
   );

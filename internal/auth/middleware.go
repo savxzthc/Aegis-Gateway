@@ -19,12 +19,19 @@ import (
 
 type contextKey string
 
-const keyIDContextKey contextKey = "aegis.key_id"
+const (
+	keyIDContextKey   contextKey = "aegis.key_id"
+	userIDContextKey  contextKey = "aegis.user_id"
+	userRoleContextKey contextKey = "aegis.user_role"
+	keyRoleContextKey contextKey = "aegis.key_role"
+	keyMetaContextKey contextKey = "aegis.key_meta"
+)
 
 const (
 	tokenCacheTTL      = 3 * time.Second
 	tokenCacheMaxItems = 4096
 	authFailureRPM     = 30
+	sessionCookieName  = "aegis_session"
 )
 
 // Store captures database methods required by auth middleware.
@@ -32,9 +39,11 @@ type Store interface {
 	ActiveKeySecrets(ctx context.Context) ([]db.APIKeySecret, error)
 	LogAuthFailure(ctx context.Context, ip string, at time.Time) error
 	MarkKeyUsed(ctx context.Context, id string, at time.Time) error
+	GetSession(ctx context.Context, token string) (*db.Session, error)
+	GetUserByID(ctx context.Context, id string) (*db.User, error)
 }
 
-// Middleware authenticates Bearer API keys and applies rate limits.
+// Middleware authenticates Bearer API keys and session cookies.
 type Middleware struct {
 	store      Store
 	limiter    *RateLimiter
@@ -47,6 +56,7 @@ type Middleware struct {
 
 type cachedToken struct {
 	keyID     string
+	keyMeta   db.APIKeySecret
 	expiresAt time.Time
 }
 
@@ -64,7 +74,7 @@ func NewMiddleware(store Store, limiter *RateLimiter, rpmFunc func() int) *Middl
 	return middleware
 }
 
-// Stop stops background cache maintenance for tests or controlled shutdown.
+// Stop stops background cache maintenance.
 func (m *Middleware) Stop() {
 	select {
 	case <-m.stopCache:
@@ -77,56 +87,98 @@ func (m *Middleware) Stop() {
 func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := clientIP(r)
-		token := bearerToken(r.Header.Get("Authorization"))
-		if token == "" {
-			m.unauthorized(w, r, ip)
-			return
-		}
-
 		now := m.nowFunc()
-		keyID, ok := m.cachedKeyID(token, now)
-		if !ok {
-			secrets, err := m.store.ActiveKeySecrets(r.Context())
-			if err != nil {
-				writeAuthError(w, http.StatusInternalServerError, "auth store unavailable", "AUTH_STORE_ERROR")
-				return
-			}
-			keyID = matchKeyID(token, secrets)
-			if keyID != "" {
-				m.cacheKeyID(token, keyID, now.Add(tokenCacheTTL))
-			}
-		}
-		if keyID == "" {
-			m.unauthorized(w, r, ip)
+
+		bearerTok := bearerToken(r.Header.Get("Authorization"))
+		if bearerTok != "" {
+			m.handleBearerAuth(w, r, bearerTok, ip, now, next)
 			return
 		}
 
-		limitKey := ip + ":" + keyID
-		if ok, retryAfter := m.limiter.Allow(limitKey, m.rpmFunc(), now); !ok {
-			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
-			writeAuthError(w, http.StatusTooManyRequests, "rate limit exceeded", "RATE_LIMITED")
+		cookie, err := r.Cookie(sessionCookieName)
+		if err == nil && cookie.Value != "" {
+			m.handleSessionAuth(w, r, cookie.Value, ip, now, next)
 			return
 		}
-		if err := m.store.MarkKeyUsed(r.Context(), keyID, now); err != nil {
-			writeAuthError(w, http.StatusInternalServerError, "auth store unavailable", "AUTH_STORE_ERROR")
-			return
-		}
-		ctx := context.WithValue(r.Context(), keyIDContextKey, keyID)
-		next.ServeHTTP(w, r.WithContext(ctx))
+
+		m.unauthorized(w, r, ip)
 	})
 }
 
-func matchKeyID(token string, secrets []db.APIKeySecret) string {
+func (m *Middleware) handleBearerAuth(w http.ResponseWriter, r *http.Request, token, ip string, now time.Time, next http.Handler) {
+	keyID, meta, ok := m.cachedKeyID(token, now)
+	if !ok {
+		secrets, err := m.store.ActiveKeySecrets(r.Context())
+		if err != nil {
+			writeAuthError(w, http.StatusInternalServerError, "auth store unavailable", "AUTH_STORE_ERROR")
+			return
+		}
+		keyID, meta = matchKeyWithMeta(token, secrets)
+		if keyID != "" {
+			m.cacheKeyID(token, keyID, meta, now.Add(tokenCacheTTL))
+		}
+	}
+	if keyID == "" {
+		m.unauthorized(w, r, ip)
+		return
+	}
+
+	limitKey := ip + ":" + keyID
+	effectiveRPM := meta.RateLimitRPM
+	if effectiveRPM <= 0 {
+		effectiveRPM = m.rpmFunc()
+	}
+	if ok, retryAfter := m.limiter.Allow(limitKey, effectiveRPM, now); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+		writeAuthError(w, http.StatusTooManyRequests, "rate limit exceeded", "RATE_LIMITED")
+		return
+	}
+	if err := m.store.MarkKeyUsed(r.Context(), keyID, now); err != nil {
+		writeAuthError(w, http.StatusInternalServerError, "auth store unavailable", "AUTH_STORE_ERROR")
+		return
+	}
+
+	if meta.MaxPromptTokens > 0 {
+		r = r.WithContext(context.WithValue(r.Context(), keyMetaContextKey, meta))
+	}
+
+	ctx := context.WithValue(r.Context(), keyIDContextKey, keyID)
+	ctx = context.WithValue(ctx, keyRoleContextKey, meta.KeyRole)
+	next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+func (m *Middleware) handleSessionAuth(w http.ResponseWriter, r *http.Request, token, ip string, now time.Time, next http.Handler) {
+	sess, err := m.store.GetSession(r.Context(), token)
+	if err != nil {
+		writeAuthError(w, http.StatusInternalServerError, "auth store unavailable", "AUTH_STORE_ERROR")
+		return
+	}
+	if sess == nil {
+		m.unauthorized(w, r, ip)
+		return
+	}
+	user, err := m.store.GetUserByID(r.Context(), sess.UserID)
+	if err != nil || user == nil {
+		m.unauthorized(w, r, ip)
+		return
+	}
+	ctx := context.WithValue(r.Context(), userIDContextKey, user.ID)
+	ctx = context.WithValue(ctx, userRoleContextKey, user.Role)
+	ctx = context.WithValue(ctx, keyRoleContextKey, "admin")
+	next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+func matchKeyWithMeta(token string, secrets []db.APIKeySecret) (string, db.APIKeySecret) {
 	for _, secret := range secrets {
 		candidate := HashKey(token, secret.Salt)
 		if subtle.ConstantTimeCompare([]byte(candidate), []byte(secret.Hash)) == 1 {
-			return secret.ID
+			return secret.ID, secret
 		}
 	}
-	return ""
+	return "", db.APIKeySecret{}
 }
 
-func (m *Middleware) cachedKeyID(token string, now time.Time) (string, bool) {
+func (m *Middleware) cachedKeyID(token string, now time.Time) (string, db.APIKeySecret, bool) {
 	cacheKey := tokenCacheKey(token)
 	m.cacheMu.RLock()
 	cached, ok := m.tokenCache[cacheKey]
@@ -137,12 +189,12 @@ func (m *Middleware) cachedKeyID(token string, now time.Time) (string, bool) {
 			delete(m.tokenCache, cacheKey)
 			m.cacheMu.Unlock()
 		}
-		return "", false
+		return "", db.APIKeySecret{}, false
 	}
-	return cached.keyID, true
+	return cached.keyID, cached.keyMeta, true
 }
 
-func (m *Middleware) cacheKeyID(token, keyID string, expiresAt time.Time) {
+func (m *Middleware) cacheKeyID(token, keyID string, meta db.APIKeySecret, expiresAt time.Time) {
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
 	if len(m.tokenCache) >= tokenCacheMaxItems {
@@ -151,7 +203,7 @@ func (m *Middleware) cacheKeyID(token, keyID string, expiresAt time.Time) {
 	if len(m.tokenCache) >= tokenCacheMaxItems {
 		m.tokenCache = map[string]cachedToken{}
 	}
-	m.tokenCache[tokenCacheKey(token)] = cachedToken{keyID: keyID, expiresAt: expiresAt}
+	m.tokenCache[tokenCacheKey(token)] = cachedToken{keyID: keyID, keyMeta: meta, expiresAt: expiresAt}
 }
 
 func (m *Middleware) pruneTokenCacheLoop(interval time.Duration) {
@@ -188,6 +240,36 @@ func KeyIDFromContext(ctx context.Context) string {
 		return value
 	}
 	return ""
+}
+
+// UserIDFromContext extracts the authenticated user ID (session auth).
+func UserIDFromContext(ctx context.Context) string {
+	if value, ok := ctx.Value(userIDContextKey).(string); ok {
+		return value
+	}
+	return ""
+}
+
+// UserRoleFromContext extracts the authenticated user role.
+func UserRoleFromContext(ctx context.Context) string {
+	if value, ok := ctx.Value(userRoleContextKey).(string); ok {
+		return value
+	}
+	return ""
+}
+
+// KeyRoleFromContext extracts the API key role from context.
+func KeyRoleFromContext(ctx context.Context) string {
+	if value, ok := ctx.Value(keyRoleContextKey).(string); ok {
+		return value
+	}
+	return ""
+}
+
+// KeyMetaFromContext returns the full key metadata if present.
+func KeyMetaFromContext(ctx context.Context) (db.APIKeySecret, bool) {
+	meta, ok := ctx.Value(keyMetaContextKey).(db.APIKeySecret)
+	return meta, ok
 }
 
 func (m *Middleware) unauthorized(w http.ResponseWriter, r *http.Request, ip string) {

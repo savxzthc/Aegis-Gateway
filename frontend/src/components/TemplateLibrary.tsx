@@ -37,51 +37,73 @@ export default function TemplateLibrary(): JSX.Element {
 
   const edit = (template: PromptTemplate) => {
     setEditing(template);
-    setForm({
-      name: template.name,
-      system_prompt: template.system_prompt,
-      prompt: template.prompt,
-      model: template.model,
-    });
+    setForm({ name: template.name, system_prompt: template.system_prompt, prompt: template.prompt, model: template.model });
   };
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[420px_minmax(0,1fr)]">
-      <section className="panel p-5">
-        <div className="mb-4 flex items-center gap-3">
-          <FileText className="h-5 w-5 text-accent" />
-          <h2 className="text-sm font-semibold">{editing ? 'Edit Template' : 'Create Template'}</h2>
+    <div className="grid gap-4 xl:grid-cols-[380px_minmax(0,1fr)]">
+      <section className="panel">
+        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+          <FileText className="h-4 w-4 text-accent" />
+          <div className="text-[10px] uppercase tracking-widest text-muted">
+            {editing ? 'Edit Template' : 'New Template'}
+          </div>
         </div>
-        <form className="space-y-3" onSubmit={submit}>
-          <input className="field w-full" placeholder="Name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-          <select className="field w-full font-mono" value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })}>
-            <option value="">No model preference</option>
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.id}
-              </option>
-            ))}
-          </select>
-          <textarea
-            className="field min-h-[96px] w-full resize-y"
-            placeholder="System prompt"
-            value={form.system_prompt}
-            onChange={(event) => setForm({ ...form, system_prompt: event.target.value })}
-          />
-          <textarea
-            className="field min-h-[220px] w-full resize-y"
-            placeholder="Reusable user prompt"
-            value={form.prompt}
-            onChange={(event) => setForm({ ...form, prompt: event.target.value })}
-          />
+        <form className="space-y-3 p-4" onSubmit={submit}>
+          <div className="space-y-1.5">
+            <label className="block text-[10px] uppercase tracking-wider text-muted">Name</label>
+            <input
+              className="field w-full"
+              placeholder="Template name"
+              value={form.name}
+              onChange={(event) => setForm({ ...form, name: event.target.value })}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-[10px] uppercase tracking-wider text-muted">Model</label>
+            <select
+              className="field w-full"
+              value={form.model}
+              onChange={(event) => setForm({ ...form, model: event.target.value })}
+            >
+              <option value="">Any model</option>
+              {models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.id}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-[10px] uppercase tracking-wider text-muted">System Prompt</label>
+            <textarea
+              className="field min-h-[80px] w-full resize-y py-2"
+              placeholder="System prompt (optional)"
+              value={form.system_prompt}
+              onChange={(event) => setForm({ ...form, system_prompt: event.target.value })}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-[10px] uppercase tracking-wider text-muted">User Prompt</label>
+            <textarea
+              className="field min-h-[180px] w-full resize-y py-2"
+              placeholder="Reusable user prompt"
+              value={form.prompt}
+              onChange={(event) => setForm({ ...form, prompt: event.target.value })}
+            />
+          </div>
           <div className="flex gap-2">
-            <button className="command-button justify-center" type="submit" disabled={!form.name.trim() || !form.prompt.trim()}>
-              {editing ? <Save className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            <button
+              className="command-button"
+              type="submit"
+              disabled={!form.name.trim() || !form.prompt.trim()}
+            >
+              {editing ? <Save className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
               {editing ? 'Save' : 'Create'}
             </button>
             {editing && (
               <button
-                className="icon-button px-3"
+                className="icon-button w-auto px-3 text-xs"
                 type="button"
                 onClick={() => {
                   setEditing(null);
@@ -96,28 +118,32 @@ export default function TemplateLibrary(): JSX.Element {
       </section>
 
       <section className="panel overflow-hidden">
-        <div className="border-b border-border p-4">
-          <h2 className="text-sm font-semibold">Prompt Templates</h2>
+        <div className="border-b border-border px-4 py-3">
+          <div className="text-[10px] uppercase tracking-widest text-muted">Prompt Templates</div>
         </div>
         <div className="divide-y divide-border">
           {templates.map((template) => (
             <article key={template.id} className="p-4 transition hover:bg-elevated">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0">
-                  <div className="font-semibold">{template.name}</div>
-                  <div className="mt-1 font-mono text-xs text-muted">{template.model || 'any model'}</div>
-                  {template.system_prompt && <p className="mt-3 line-clamp-2 text-sm text-muted">{template.system_prompt}</p>}
-                  <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-sm">{template.prompt}</p>
+                  <div className="text-sm font-bold text-primary">{template.name}</div>
+                  <div className="mt-0.5 text-[10px] uppercase tracking-wider text-muted">
+                    {template.model || 'any model'}
+                  </div>
+                  {template.system_prompt && (
+                    <p className="mt-2 line-clamp-2 text-xs text-muted">{template.system_prompt}</p>
+                  )}
+                  <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs text-primary">{template.prompt}</p>
                 </div>
                 <div className="flex shrink-0 gap-2">
                   <button className="icon-button" type="button" title="Copy prompt" onClick={() => void copyTemplate(template)}>
-                    <Copy className="h-4 w-4" />
+                    <Copy className="h-3.5 w-3.5" />
                   </button>
-                  <button className="command-button h-9 px-3 text-xs" type="button" onClick={() => edit(template)}>
+                  <button className="command-button" type="button" onClick={() => edit(template)}>
                     Edit
                   </button>
                   <button
-                    className="danger-button h-9 px-3 text-xs"
+                    className="danger-button"
                     type="button"
                     onClick={() => {
                       if (window.confirm(`Delete ${template.name}?`)) {
@@ -125,14 +151,16 @@ export default function TemplateLibrary(): JSX.Element {
                       }
                     }}
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <Trash2 className="h-3.5 w-3.5" />
                     Delete
                   </button>
                 </div>
               </div>
             </article>
           ))}
-          {templates.length === 0 && <div className="p-8 text-center text-muted">No prompt templates yet.</div>}
+          {templates.length === 0 && (
+            <div className="p-8 text-center text-xs text-muted">No prompt templates yet.</div>
+          )}
         </div>
       </section>
     </div>

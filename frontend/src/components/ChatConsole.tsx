@@ -1,4 +1,4 @@
-import { Bot, Copy, Eraser, FileText, Loader2, Send, User } from 'lucide-react';
+import { Bot, Copy, Eraser, FileText, Loader2, Send, Square, User } from 'lucide-react';
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { ChatMessage, GatewayAPIError, gatewayErrorMessage, streamChatCompletion } from '../api/client';
@@ -49,15 +49,9 @@ export default function ChatConsole(): JSX.Element {
   const submit = async (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
     const content = input.trim();
-    if (!content || !selectedModel || sending) {
-      return;
-    }
+    if (!content || !selectedModel || sending) return;
 
-    const userMessage: TranscriptMessage = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content,
-    };
+    const userMessage: TranscriptMessage = { id: crypto.randomUUID(), role: 'user', content };
     const nextMessages = [...messages, userMessage];
     const template = templates.find((item) => item.id === selectedTemplate);
     const requestMessages: ChatMessage[] = [
@@ -73,14 +67,7 @@ export default function ChatConsole(): JSX.Element {
     abortRef.current = controller;
 
     try {
-      setMessages((current) => [
-        ...current,
-        {
-          id: assistantID,
-          role: 'assistant',
-          content: '',
-        },
-      ]);
+      setMessages((current) => [...current, { id: assistantID, role: 'assistant', content: '' }]);
       const result = await streamChatCompletion(
         selectedModel,
         requestMessages,
@@ -96,12 +83,7 @@ export default function ChatConsole(): JSX.Element {
       setMessages((current) =>
         current.map((message) =>
           message.id === assistantID
-            ? {
-                ...message,
-                content: message.content || result.content,
-                routedModel: result.routedModel,
-                fallback: result.fallback,
-              }
+            ? { ...message, content: message.content || result.content, routedModel: result.routedModel, fallback: result.fallback }
             : message,
         ),
       );
@@ -130,24 +112,24 @@ export default function ChatConsole(): JSX.Element {
   };
 
   return (
-    <div className="grid min-h-[620px] grid-cols-1 gap-5 xl:h-[calc(100vh-128px)] xl:grid-cols-[minmax(0,1fr)_320px]">
+    <div className="grid min-h-[620px] grid-cols-1 gap-4 xl:h-[calc(100vh-112px)] xl:grid-cols-[minmax(0,1fr)_280px]">
       <section className="panel flex min-h-0 flex-col overflow-hidden">
-        <div className="flex items-center justify-between gap-3 border-b border-border p-4">
+        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold">Chat</h2>
-            <div className="mt-1 truncate font-mono text-xs text-muted">{selectedModel || 'No model selected'}</div>
+            <div className="text-[10px] uppercase tracking-widest text-muted">Chat Console</div>
+            <div className="truncate text-xs text-accent">{selectedModel || 'No model selected'}</div>
           </div>
           <button className="icon-button" type="button" title="Clear chat" aria-label="Clear chat" onClick={() => setMessages([])}>
-            <Eraser className="h-4 w-4" />
+            <Eraser className="h-3.5 w-3.5" />
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
           {messages.length === 0 && (
             <div className="flex h-full items-center justify-center text-center">
               <div>
-                <Bot className="mx-auto mb-3 h-8 w-8 text-accent" />
-                <div className="font-mono text-sm text-muted">Ready</div>
+                <div className="text-2xl text-accent">&gt;_</div>
+                <div className="mt-2 text-[10px] uppercase tracking-widest text-muted">Ready</div>
               </div>
             </div>
           )}
@@ -157,49 +139,48 @@ export default function ChatConsole(): JSX.Element {
           ))}
 
           {sending && (
-            <div className="flex items-center gap-2 font-mono text-sm text-muted">
-              <Loader2 className="h-4 w-4 animate-spin text-accent" />
-              Running local model
+            <div className="flex items-center gap-2 text-xs text-muted">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+              <span className="text-[10px] uppercase tracking-wider">Processing</span>
             </div>
           )}
           <div ref={bottomRef} />
         </div>
 
-        <form className="border-t border-border p-4" onSubmit={(event) => void submit(event)}>
-          <div className="flex gap-3">
+        <form className="border-t border-border p-3" onSubmit={(event) => void submit(event)}>
+          <div className="flex gap-2">
             <textarea
-              className="field min-h-[88px] flex-1 resize-none py-3"
+              className="field min-h-[80px] flex-1 resize-none py-2"
+              placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={onKeyDown}
               disabled={sending}
             />
             <button
-              className="command-button h-[88px] w-12 justify-center px-0"
+              className="command-button h-[80px] w-10 justify-center px-0"
               type={sending ? 'button' : 'submit'}
               aria-label={sending ? 'Stop generation' : 'Send message'}
               title={sending ? 'Stop generation' : 'Send message'}
               disabled={!sending && (!input.trim() || !selectedModel)}
               onClick={() => {
-                if (sending) {
-                  abortRef.current?.abort();
-                }
+                if (sending) abortRef.current?.abort();
               }}
             >
-              {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              {sending ? <Square className="h-3.5 w-3.5" /> : <Send className="h-3.5 w-3.5" />}
             </button>
           </div>
         </form>
       </section>
 
-      <aside className="space-y-5">
-        <section className="panel p-4">
-          <label className="mb-2 block text-sm text-muted" htmlFor="chat-model">
+      <aside className="space-y-3">
+        <section className="panel p-3">
+          <label className="mb-1.5 block text-[10px] uppercase tracking-wider text-muted" htmlFor="chat-model">
             Model
           </label>
           <select
             id="chat-model"
-            className="field w-full font-mono"
+            className="field w-full"
             value={selectedModel}
             onChange={(event) => setSelectedModel(event.target.value)}
           >
@@ -211,9 +192,9 @@ export default function ChatConsole(): JSX.Element {
           </select>
         </section>
 
-        <section className="panel p-4">
-          <label className="mb-2 flex items-center gap-2 text-sm text-muted" htmlFor="chat-template">
-            <FileText className="h-4 w-4 text-accent" />
+        <section className="panel p-3">
+          <label className="mb-1.5 flex items-center gap-2 text-[10px] uppercase tracking-wider text-muted" htmlFor="chat-template">
+            <FileText className="h-3 w-3 text-accent" />
             Template
           </label>
           <select
@@ -225,9 +206,7 @@ export default function ChatConsole(): JSX.Element {
               setSelectedTemplate(event.target.value);
               if (template) {
                 setInput(template.prompt);
-                if (template.model) {
-                  setSelectedModel(template.model);
-                }
+                if (template.model) setSelectedModel(template.model);
               }
             }}
           >
@@ -240,22 +219,24 @@ export default function ChatConsole(): JSX.Element {
           </select>
         </section>
 
-        <section className="panel p-4">
-          <h2 className="mb-3 text-sm font-semibold">Models</h2>
-          <div className="space-y-2">
+        <section className="panel overflow-hidden">
+          <div className="border-b border-border px-3 py-2">
+            <div className="text-[10px] uppercase tracking-widest text-muted">Models</div>
+          </div>
+          <div className="divide-y divide-border">
             {models.map((model) => (
               <button
                 key={model.id}
-                className={`w-full rounded-panel border p-3 text-left transition ${
+                className={`w-full border-l-2 p-3 text-left transition ${
                   model.id === selectedModel
                     ? 'border-accent bg-[var(--accent-dim)]'
-                    : 'border-border bg-base hover:bg-elevated'
+                    : 'border-transparent hover:bg-elevated'
                 }`}
                 type="button"
                 onClick={() => setSelectedModel(model.id)}
               >
-                <div className="truncate font-mono text-sm text-primary">{model.id}</div>
-                <div className="mt-1 flex items-center justify-between gap-2 font-mono text-xs text-muted">
+                <div className="truncate text-xs text-primary">{model.id}</div>
+                <div className="mt-0.5 flex items-center justify-between text-[10px] text-muted">
                   <span>{model.vram_gb.toFixed(1)} GB</span>
                   <span className={model.status === 'loaded' ? 'text-success' : 'text-muted'}>{model.status}</span>
                 </div>
@@ -276,26 +257,34 @@ function MessageBubble({ message }: { message: TranscriptMessage }): JSX.Element
   };
 
   return (
-    <div className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div className={`flex gap-2 ${isUser ? 'justify-end' : 'justify-start'}`}>
       {!isUser && (
-        <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-panel border border-accent bg-[var(--accent-dim)] text-accent">
-          <Bot className="h-4 w-4" />
+        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center border border-accent bg-[var(--accent-dim)] text-accent">
+          <Bot className="h-3.5 w-3.5" />
         </div>
       )}
-      <div className={`max-w-[78%] rounded-panel border p-4 ${isUser ? 'border-accent bg-[var(--accent-dim)]' : 'border-border bg-elevated'}`}>
-        <div className="whitespace-pre-wrap text-sm leading-6">{message.content}</div>
-        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3 font-mono text-xs text-muted">
-          <span>{isUser ? 'you' : message.routedModel ?? 'assistant'}</span>
+      <div
+        className={`max-w-[80%] border p-3 text-xs leading-6 ${
+          isUser ? 'border-accent bg-[var(--accent-dim)]' : 'border-border bg-elevated'
+        }`}
+      >
+        <div className="whitespace-pre-wrap">{message.content}</div>
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2 text-[10px] text-muted">
+          <span>{isUser ? 'you' : (message.routedModel ?? 'assistant')}</span>
           {message.fallback && <span className="text-warn">fallback</span>}
-          <button className="ml-auto inline-flex items-center gap-1 text-muted transition hover:text-accent" type="button" onClick={() => void copy()}>
-            <Copy className="h-3.5 w-3.5" />
+          <button
+            className="ml-auto inline-flex items-center gap-1 text-muted transition hover:text-accent"
+            type="button"
+            onClick={() => void copy()}
+          >
+            <Copy className="h-3 w-3" />
             Copy
           </button>
         </div>
       </div>
       {isUser && (
-        <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-panel border border-border bg-elevated text-primary">
-          <User className="h-4 w-4" />
+        <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center border border-border bg-elevated text-muted">
+          <User className="h-3.5 w-3.5" />
         </div>
       )}
     </div>

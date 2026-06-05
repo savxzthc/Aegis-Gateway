@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0f0f0f">
+<title>Aegis Chat</title>
+<style>
+:root {
+  --bg:        #0f0f0f;
+  --surface:   #1a1a1a;
+  --surface2:  #252525;
+  --border:    #2e2e2e;
+  --accent:    #7c3aed;
+  --accent-dk: #6d28d9;
+  --text:      #e5e5e5;
+  --text-dim:  #888;
+  --user-bg:   #7c3aed;
+  --ai-bg:     #1a1a1a;
+  --error:     #ef4444;
+  --radius:    18px;
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#auth-screen {
+  display: none;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+#auth-screen.active { display: flex; }
+.auth-card {
+  background: var(--surface);
+  border-radius: 16px;
+  padding: 32px 24px;
+  width: min(320px, calc(100vw - 48px));
+}
+.auth-title {
+  font-weight: 700;
+  font-size: 1.4rem;
+  color: var(--text);
+  margin: 0;
+}
+.auth-subtitle {
+  color: var(--text-dim);
+  font-size: 0.875rem;
+  margin: 4px 0 20px;
+}
+.auth-input {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 1rem;
+  outline: none;
+}
+.auth-input:focus { border-color: var(--accent); }
+#auth-btn {
+  width: 100%;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 14px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 12px;
+}
+#auth-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+#auth-error {
+  color: var(--error);
+  font-size: 0.875rem;
+  min-height: 20px;
+  margin: 8px 0 0;
+}
+#chat-screen {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+#chat-screen.active { display: flex; }
+#header {
+  height: 56px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  padding-top: env(safe-area-inset-top);
+  gap: 8px;
+  flex-shrink: 0;
+}
+.header-title {
+  font-weight: 700;
+  font-size: 1rem;
+  white-space: nowrap;
+}
+#model-select {
+  flex: 1;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.875rem;
+  width: 100%;
+  outline: none;
+}
+.icon-btn {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 1.1rem;
+  flex-shrink: 0;
+  border-radius: 8px;
+}
+.icon-btn:hover { background: var(--surface2); }
+#messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.bubble-wrap { display: flex; flex-direction: column; max-width: 80%; }
+.bubble-wrap.user { align-self: flex-end; align-items: flex-end; }
+.bubble-wrap.assistant { align-self: flex-start; align-items: flex-start; }
+.bubble-wrap.system { align-self: center; }
+.bubble {
+  position: relative;
+  word-break: break-word;
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+.bubble.user {
+  background: var(--user-bg);
+  color: #fff;
+  border-radius: 18px 18px 4px 18px;
+  padding: 10px 14px;
+}
+.bubble.assistant {
+  background: var(--ai-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 18px 18px 18px 4px;
+  padding: 10px 14px;
+  white-space: pre-wrap;
+}
+.bubble.system-msg {
+  color: var(--error);
+  font-size: 0.8rem;
+  padding: 4px 8px;
+}
+.bubble-content { display: block; }
+.copy-btn {
+  display: none;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  margin-top: 4px;
+  color: var(--text-dim);
+  align-self: flex-end;
+}
+.bubble-wrap:hover .copy-btn,
+.bubble-wrap.copy-visible .copy-btn { display: block; }
+#typing {
+  display: none;
+  align-self: flex-start;
+  background: var(--ai-bg);
+  border: 1px solid var(--border);
+  border-radius: 18px 18px 18px 4px;
+  padding: 12px 16px;
+}
+#typing.visible { display: flex; gap: 4px; align-items: center; }
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  animation: blink 1.2s infinite;
+}
+.dot:nth-child(2) { animation-delay: 0.2s; }
+.dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes blink {
+  0%, 80%, 100% { opacity: 0.3; }
+  40% { opacity: 1; }
+}
+#input-bar {
+  display: flex;
+  align-items: flex-end;
+  padding: 8px 12px;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  gap: 8px;
+  flex-shrink: 0;
+}
+#msg-input {
+  flex: 1;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  padding: 10px 16px;
+  font-size: 1rem;
+  font-family: inherit;
+  resize: none;
+  max-height: 120px;
+  overflow-y: auto;
+  line-height: 1.45;
+  outline: none;
+  rows: 1;
+}
+#msg-input:focus { border-color: var(--accent); }
+#send-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 1.1rem;
+  color: #fff;
+  transition: background 0.15s;
+}
+#send-btn:hover { background: var(--accent-dk); }
+#send-btn:disabled { opacity: 0.5; pointer-events: none; }
+</style>
+</head>
+<body>
+
+<div id="auth-screen">
+  <div class="auth-card">
+    <h1 class="auth-title">Aegis Gateway</h1>
+    <p class="auth-subtitle">Enter your API key to connect</p>
+    <input type="password" id="key-input" class="auth-input" placeholder="API Key" autocomplete="off">
+    <button id="auth-btn">Connect</button>
+    <p id="auth-error"></p>
+  </div>
+</div>
+
+<div id="chat-screen">
+  <div id="header">
+    <span class="header-title">⚡ Aegis</span>
+    <select id="model-select"></select>
+    <button class="icon-btn" id="new-chat-btn" title="New chat">🗑</button>
+    <button class="icon-btn" id="logout-btn" title="Logout">🔑</button>
+  </div>
+  <div id="messages">
+    <div id="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+  </div>
+  <div id="input-bar">
+    <textarea id="msg-input" rows="1" placeholder="Message..."></textarea>
+    <button id="send-btn" disabled>➤</button>
+  </div>
+</div>
+
+<script>
+let apiKey = '';
+let messages = [];
+let streaming = false;
+let abortCtrl = null;
+
+const authScreen = document.getElementById('auth-screen');
+const chatScreen = document.getElementById('chat-screen');
+const keyInput = document.getElementById('key-input');
+const authBtn = document.getElementById('auth-btn');
+const authError = document.getElementById('auth-error');
+const modelSelect = document.getElementById('model-select');
+const messagesEl = document.getElementById('messages');
+const typingEl = document.getElementById('typing');
+const msgInput = document.getElementById('msg-input');
+const sendBtn = document.getElementById('send-btn');
+
+function showAuthScreen() {
+  authScreen.classList.add('active');
+  chatScreen.classList.remove('active');
+  authError.textContent = '';
+  keyInput.value = '';
+  authBtn.textContent = 'Connect';
+  authBtn.disabled = false;
+}
+
+function showChatScreen() {
+  authScreen.classList.remove('active');
+  chatScreen.classList.add('active');
+}
+
+async function initChat(key) {
+  apiKey = key;
+  try {
+    const res = await fetch('/v1/models', {
+      headers: { 'Authorization': 'Bearer ' + key, 'X-Mobile': 'true' }
+    });
+    if (!res.ok) {
+      if (res.status === 401) {
+        localStorage.removeItem('aegis_api_key');
+        showAuthScreen();
+        authError.textContent = 'Invalid key — check and try again';
+        return;
+      }
+      throw new Error('non-200');
+    }
+    const data = await res.json();
+    const saved = localStorage.getItem('aegis_mobile_model');
+    modelSelect.innerHTML = '';
+    const models = (data.data || []);
+    models.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.id;
+      if (m.id === saved) opt.selected = true;
+      modelSelect.appendChild(opt);
+    });
+    if (!modelSelect.value && models.length > 0) modelSelect.value = models[0].id;
+    showChatScreen();
+  } catch {
+    authBtn.disabled = false;
+    authBtn.textContent = 'Connect';
+    authError.textContent = 'Could not reach Aegis — check your network';
+  }
+}
+
+authBtn.addEventListener('click', async () => {
+  const key = keyInput.value.trim();
+  if (!key) return;
+  authBtn.disabled = true;
+  authBtn.textContent = 'Connecting…';
+  authError.textContent = '';
+  try {
+    const res = await fetch('/v1/models', {
+      headers: { 'Authorization': 'Bearer ' + key, 'X-Mobile': 'true' }
+    });
+    if (res.ok) {
+      localStorage.setItem('aegis_api_key', key);
+      await initChat(key);
+    } else {
+      authBtn.disabled = false;
+      authBtn.textContent = 'Connect';
+      authError.textContent = 'Invalid key — check and try again';
+    }
+  } catch {
+    authBtn.disabled = false;
+    authBtn.textContent = 'Connect';
+    authError.textContent = 'Could not reach Aegis — check your network';
+  }
+});
+
+keyInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') authBtn.click();
+});
+
+modelSelect.addEventListener('change', () => {
+  localStorage.setItem('aegis_mobile_model', modelSelect.value);
+});
+
+document.getElementById('new-chat-btn').addEventListener('click', () => {
+  messages = [];
+  renderMessages();
+});
+
+document.getElementById('logout-btn').addEventListener('click', () => {
+  localStorage.removeItem('aegis_api_key');
+  apiKey = '';
+  messages = [];
+  streaming = false;
+  if (abortCtrl) abortCtrl.abort();
+  showAuthScreen();
+});
+
+function scrollToBottom() {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function renderMessages() {
+  while (messagesEl.firstChild && messagesEl.firstChild !== typingEl) {
+    messagesEl.removeChild(messagesEl.firstChild);
+  }
+  messages.forEach(m => {
+    messagesEl.insertBefore(createBubble(m.role, m.content), typingEl);
+  });
+  scrollToBottom();
+}
+
+function createBubble(role, content) {
+  const wrap = document.createElement('div');
+  wrap.className = 'bubble-wrap ' + (role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : 'system');
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble ' + (role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : 'system-msg');
+  const bc = document.createElement('span');
+  bc.className = 'bubble-content';
+  bc.textContent = content;
+  bubble.appendChild(bc);
+  wrap.appendChild(bubble);
+  if (role === 'user' || role === 'assistant') {
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-btn';
+    copyBtn.textContent = '📋';
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(bc.textContent).then(() => {
+        copyBtn.textContent = '✅';
+        setTimeout(() => { copyBtn.textContent = '📋'; }, 1500);
+      });
+    });
+    wrap.appendChild(copyBtn);
+    wrap.addEventListener('touchstart', () => {
+      wrap.classList.toggle('copy-visible');
+    }, { passive: true });
+  }
+  return wrap;
+}
+
+function setStreaming(val) {
+  streaming = val;
+  sendBtn.textContent = val ? '◼' : '➤';
+  sendBtn.disabled = !val && msgInput.value.trim() === '';
+}
+
+async function sendMessage() {
+  const text = msgInput.value.trim();
+  if (!text || streaming) return;
+  messages.push({ role: 'user', content: text });
+  msgInput.value = '';
+  msgInput.style.height = 'auto';
+  sendBtn.disabled = true;
+  renderMessages();
+  typingEl.classList.add('visible');
+  scrollToBottom();
+  setStreaming(true);
+  abortCtrl = new AbortController();
+
+  try {
+    const res = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + apiKey,
+        'Content-Type': 'application/json',
+        'X-Mobile': 'true'
+      },
+      body: JSON.stringify({
+        model: modelSelect.value,
+        messages: messages,
+        stream: true
+      }),
+      signal: abortCtrl.signal
+    });
+
+    typingEl.classList.remove('visible');
+
+    if (!res.ok) {
+      if (res.status === 401) {
+        localStorage.removeItem('aegis_api_key');
+        showAuthScreen();
+        return;
+      }
+      const errWrap = createBubble('error', 'Error ' + res.status + ' — request failed');
+      messagesEl.insertBefore(errWrap, typingEl);
+      scrollToBottom();
+      setStreaming(false);
+      return;
+    }
+
+    const assistantWrap = createBubble('assistant', '');
+    messagesEl.insertBefore(assistantWrap, typingEl);
+    const contentEl = assistantWrap.querySelector('.bubble-content');
+    scrollToBottom();
+
+    let assistantText = '';
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop();
+      for (const part of parts) {
+        for (const line of part.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (raw === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(raw);
+            const delta = parsed.choices?.[0]?.delta?.content;
+            if (delta) {
+              assistantText += delta;
+              contentEl.textContent = assistantText;
+              scrollToBottom();
+            }
+          } catch {}
+        }
+      }
+    }
+
+    messages.push({ role: 'assistant', content: assistantText });
+  } catch (e) {
+    typingEl.classList.remove('visible');
+    if (e.name !== 'AbortError') {
+      const errWrap = createBubble('error', 'Stream error — ' + e.message);
+      messagesEl.insertBefore(errWrap, typingEl);
+      scrollToBottom();
+    }
+  }
+
+  setStreaming(false);
+}
+
+sendBtn.addEventListener('click', () => {
+  if (streaming) {
+    abortCtrl.abort();
+  } else {
+    sendMessage();
+  }
+});
+
+msgInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+msgInput.addEventListener('input', () => {
+  msgInput.style.height = 'auto';
+  msgInput.style.height = msgInput.scrollHeight + 'px';
+  sendBtn.disabled = msgInput.value.trim() === '' && !streaming;
+});
+
+const saved = localStorage.getItem('aegis_api_key');
+if (saved) {
+  initChat(saved);
+} else {
+  showAuthScreen();
+}
+</script>
+</body>
+</html>

@@ -17,11 +17,11 @@ export default {
         success: 'var(--success)',
       },
       fontFamily: {
-        sans: ['DM Sans'],
-        mono: ['JetBrains Mono'],
+        sans: ['JetBrains Mono', 'monospace'],
+        mono: ['JetBrains Mono', 'monospace'],
       },
       borderRadius: {
-        panel: '8px',
+        panel: '0px',
       },
     },
   },

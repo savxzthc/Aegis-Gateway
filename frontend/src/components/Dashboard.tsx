@@ -21,7 +21,7 @@ export default function Dashboard(): JSX.Element {
   const yesterday = stats?.requests_yesterday ?? 0;
   const trendUp = today >= yesterday;
   const avgLatency = stats?.avg_latency_ms ?? 0;
-  const activeModel = stats?.active_model || 'None loaded';
+  const activeModel = stats?.active_model || 'none';
   const chartData =
     stats?.requests_per_hour.map((item) => ({
       hour: new Date(item.hour).toLocaleTimeString([], { hour: '2-digit' }),
@@ -29,59 +29,72 @@ export default function Dashboard(): JSX.Element {
     })) ?? [];
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <HardwareCard />
 
-      <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <StatCard
-          icon={<Activity className="h-5 w-5" />}
-          label="Requests Today"
+          icon={<Activity className="h-4 w-4" />}
+          label="Req Today"
           value={today.toLocaleString()}
-          detail={`${trendUp ? 'Up' : 'Down'} vs ${yesterday.toLocaleString()} yesterday`}
+          detail={`${yesterday.toLocaleString()} yesterday`}
           tone={trendUp ? 'success' : 'muted'}
-          detailIcon={trendUp ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
+          trendIcon={trendUp ? <TrendingUp className="h-3.5 w-3.5" /> : <TrendingDown className="h-3.5 w-3.5" />}
         />
         <StatCard
-          icon={<Gauge className="h-5 w-5" />}
+          icon={<Gauge className="h-4 w-4" />}
           label="Avg Latency"
           value={`${avgLatency} ms`}
           detail={latencyLabel(avgLatency)}
           tone={latencyTone(avgLatency)}
         />
-        <div className="panel p-5">
-          <div className="mb-4 flex items-center gap-3 text-muted">
-            <Zap className="h-5 w-5 text-accent" />
-            <span className="text-sm">Active Model</span>
+        <StatCard
+          icon={<GitBranch className="h-4 w-4" />}
+          label="Fallback Rate"
+          value={`${(stats?.fallback_rate_pct ?? 0).toFixed(1)}%`}
+          detail="of traffic"
+          tone={(stats?.fallback_rate_pct ?? 0) > 10 ? 'warn' : 'success'}
+        />
+        <div className="panel p-4">
+          <div className="mb-1 flex items-center gap-2 text-[10px] uppercase tracking-wider text-muted">
+            <Zap className="h-3.5 w-3.5 text-accent" />
+            Active Model
           </div>
-          <div className="mb-4 truncate font-mono text-3xl font-semibold">{activeModel}</div>
+          <div className="truncate text-sm font-bold text-primary">{activeModel}</div>
           <progress
-            className="vram-progress h-2 w-full"
+            className="vram-progress mt-3 h-1 w-full"
             max={Math.max(hardware?.vram_total_gb ?? 1, 1)}
             value={hardware?.vram_used_gb ?? 0}
           />
         </div>
-        <StatCard
-          icon={<GitBranch className="h-5 w-5" />}
-          label="Fallback Rate"
-          value={`${(stats?.fallback_rate_pct ?? 0).toFixed(1)}%`}
-          detail="Last recorded traffic"
-          tone={(stats?.fallback_rate_pct ?? 0) > 10 ? 'warn' : 'success'}
-        />
-      </section>
+      </div>
 
-      <section className="panel p-5">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-primary">Requests per Hour</h2>
-          <span className="font-mono text-xs text-muted">last 24h</span>
+      <section className="panel">
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div className="text-[10px] uppercase tracking-widest text-muted">Requests / Hour</div>
+          <div className="text-[10px] uppercase tracking-widest text-muted">Last 24h</div>
         </div>
-        <div className="h-[280px]">
+        <div className="h-[240px] px-2 py-3">
           <ResponsiveContainer height="100%" width="100%">
-            <BarChart data={chartData}>
+            <BarChart data={chartData} barCategoryGap="30%">
               <CartesianGrid stroke="var(--border)" vertical={false} />
-              <XAxis dataKey="hour" stroke="var(--text-muted)" tickLine={false} axisLine={false} />
-              <YAxis stroke="var(--text-muted)" tickLine={false} axisLine={false} allowDecimals={false} />
-              <Tooltip cursor={false} content={<ChartTooltip />} />
-              <Bar dataKey="count" fill="var(--accent)" radius={[4, 4, 0, 0]} />
+              <XAxis
+                dataKey="hour"
+                stroke="var(--text-muted)"
+                tickLine={false}
+                axisLine={false}
+                tick={{ fontSize: 10 }}
+              />
+              <YAxis
+                stroke="var(--text-muted)"
+                tickLine={false}
+                axisLine={false}
+                allowDecimals={false}
+                tick={{ fontSize: 10 }}
+                width={28}
+              />
+              <Tooltip cursor={{ fill: 'var(--bg-elevated)' }} content={<ChartTooltip />} />
+              <Bar dataKey="count" fill="var(--accent)" radius={0} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -103,9 +116,9 @@ function ChartTooltip({
     return null;
   }
   return (
-    <div className="rounded-panel border border-border bg-elevated px-3 py-2 text-sm shadow-xl">
-      <div className="font-mono text-muted">{label}</div>
-      <div className="font-mono text-accent">{payload[0].value ?? 0} requests</div>
+    <div className="border border-border bg-elevated px-3 py-2 text-xs">
+      <div className="text-muted">{label}</div>
+      <div className="text-accent">{payload[0].value ?? 0} req</div>
     </div>
   );
 }
@@ -116,19 +129,19 @@ interface StatCardProps {
   value: string;
   detail: string;
   tone: 'success' | 'warn' | 'danger' | 'muted';
-  detailIcon?: JSX.Element;
+  trendIcon?: JSX.Element;
 }
 
-function StatCard({ icon, label, value, detail, tone, detailIcon }: StatCardProps): JSX.Element {
+function StatCard({ icon, label, value, detail, tone, trendIcon }: StatCardProps): JSX.Element {
   return (
-    <div className="panel p-5">
-      <div className="mb-4 flex items-center gap-3 text-muted">
+    <div className="panel p-4">
+      <div className="mb-1 flex items-center gap-2 text-[10px] uppercase tracking-wider text-muted">
         <span className="text-accent">{icon}</span>
-        <span className="text-sm">{label}</span>
+        {label}
       </div>
-      <div className={`mb-3 font-mono text-3xl font-semibold ${toneClass(tone)}`}>{value}</div>
-      <div className="flex items-center gap-2 text-sm text-muted">
-        {detailIcon}
+      <div className={`text-2xl font-bold ${toneClass(tone)}`}>{value}</div>
+      <div className="mt-1 flex items-center gap-1 text-[10px] text-muted">
+        {trendIcon}
         <span>{detail}</span>
       </div>
     </div>
@@ -136,34 +149,20 @@ function StatCard({ icon, label, value, detail, tone, detailIcon }: StatCardProp
 }
 
 function latencyTone(value: number): 'success' | 'warn' | 'danger' {
-  if (value < 200) {
-    return 'success';
-  }
-  if (value <= 500) {
-    return 'warn';
-  }
+  if (value < 200) return 'success';
+  if (value <= 500) return 'warn';
   return 'danger';
 }
 
 function latencyLabel(value: number): string {
-  if (value < 200) {
-    return 'fast';
-  }
-  if (value <= 500) {
-    return 'moderate';
-  }
+  if (value < 200) return 'fast';
+  if (value <= 500) return 'moderate';
   return 'slow';
 }
 
 function toneClass(tone: StatCardProps['tone']): string {
-  if (tone === 'success') {
-    return 'text-success';
-  }
-  if (tone === 'warn') {
-    return 'text-warn';
-  }
-  if (tone === 'danger') {
-    return 'text-danger';
-  }
+  if (tone === 'success') return 'text-success';
+  if (tone === 'warn') return 'text-warn';
+  if (tone === 'danger') return 'text-danger';
   return 'text-primary';
 }
