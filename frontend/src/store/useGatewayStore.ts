@@ -8,6 +8,7 @@ import {
   CreateKeyResponse,
   GatewayAPIError,
   HardwareInfo,
+  LocalModel,
   LogsResponse,
   ModelInfo,
   PromptTemplate,
@@ -20,6 +21,7 @@ import {
   gatewayErrorMessage,
   getConfig,
   getHardware,
+  getLocalModels,
   getModelCatalog,
   getKeys,
   getLogs,
@@ -28,6 +30,7 @@ import {
   getTemplates,
   patchConfig,
   pullModel,
+  registerInstalledModel,
   revokeKey,
   setAuthToken,
   updateKeyModels,
@@ -49,6 +52,8 @@ interface GatewayState {
   catalogTotal: number;
   catalogLimit: number;
   catalogOffset: number;
+  localModels: LocalModel[];
+  localModelsReachable: boolean;
   stats: StatsResponse | null;
   logs: RequestLog[];
   logLimit: number;
@@ -65,6 +70,8 @@ interface GatewayState {
   loadModels: () => Promise<void>;
   loadModelCatalog: (category?: CatalogCategory, append?: boolean, limit?: number) => Promise<void>;
   pullCatalogModel: (model: string) => Promise<void>;
+  loadLocalModels: () => Promise<void>;
+  registerLocalModel: (model: string) => Promise<void>;
   loadStats: () => Promise<void>;
   loadLogs: (offset?: number) => Promise<void>;
   loadKeys: () => Promise<void>;
@@ -91,6 +98,8 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   catalogTotal: 0,
   catalogLimit: 12,
   catalogOffset: 0,
+  localModels: [],
+  localModelsReachable: false,
   stats: null,
   logs: [],
   logLimit: 50,
@@ -154,6 +163,28 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
         models,
         connected: true,
       });
+    } catch (error) {
+      if (error instanceof GatewayAPIError && error.status === 401) {
+        window.localStorage.removeItem('aegis_api_key');
+        setAuthToken('');
+        set({ token: '', connected: false, error: 'API key rejected. Sign in again.' });
+      } else {
+        set({ error: errorMessage(error), connected: false });
+      }
+      throw error;
+    }
+  },
+  loadLocalModels: async () => {
+    await guard(set, async () => {
+      const res = await getLocalModels();
+      set({ localModels: res.data, localModelsReachable: res.reachable, connected: true });
+    });
+  },
+  registerLocalModel: async (model) => {
+    try {
+      await registerInstalledModel(model);
+      const [res, models] = await Promise.all([getLocalModels(), getModels()]);
+      set({ localModels: res.data, localModelsReachable: res.reachable, models, connected: true });
     } catch (error) {
       if (error instanceof GatewayAPIError && error.status === 401) {
         window.localStorage.removeItem('aegis_api_key');

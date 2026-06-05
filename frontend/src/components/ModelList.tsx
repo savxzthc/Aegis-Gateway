@@ -1,7 +1,7 @@
-import { CheckCircle2, Cpu, Download, ExternalLink, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { CheckCircle2, Cpu, Download, ExternalLink, HardDrive, Plus, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { CatalogCategory, CatalogModel, GatewayAPIError, ModelInfo, gatewayErrorMessage } from '../api/client';
+import { CatalogCategory, CatalogModel, GatewayAPIError, LocalModel, ModelInfo, gatewayErrorMessage } from '../api/client';
 import { useGatewayStore } from '../store/useGatewayStore';
 
 export default function ModelList(): JSX.Element {
@@ -10,10 +10,15 @@ export default function ModelList(): JSX.Element {
   const catalogOnline = useGatewayStore((state) => state.catalogOnline);
   const catalogCategory = useGatewayStore((state) => state.catalogCategory);
   const catalogTotal = useGatewayStore((state) => state.catalogTotal);
+  const localModels = useGatewayStore((state) => state.localModels);
+  const localModelsReachable = useGatewayStore((state) => state.localModelsReachable);
   const loadModels = useGatewayStore((state) => state.loadModels);
   const loadModelCatalog = useGatewayStore((state) => state.loadModelCatalog);
+  const loadLocalModels = useGatewayStore((state) => state.loadLocalModels);
   const pullCatalogModel = useGatewayStore((state) => state.pullCatalogModel);
+  const registerLocalModel = useGatewayStore((state) => state.registerLocalModel);
   const [pulling, setPulling] = useState('');
+  const [registering, setRegistering] = useState('');
   const [loadingMore, setLoadingMore] = useState(false);
   const catalogCategoryRef = useRef(catalogCategory);
   const catalogCountRef = useRef(catalog.length);
@@ -29,17 +34,40 @@ export default function ModelList(): JSX.Element {
   useEffect(() => {
     void loadModels();
     void loadModelCatalog(catalogCategoryRef.current);
+    void loadLocalModels();
     const id = window.setInterval(() => {
       void loadModels();
       void loadModelCatalog(catalogCategoryRef.current, false, Math.max(12, catalogCountRef.current));
+      void loadLocalModels();
     }, 5000);
     return () => window.clearInterval(id);
-  }, [loadModelCatalog, loadModels]);
+  }, [loadModelCatalog, loadModels, loadLocalModels]);
 
   const registered = useMemo(() => new Set(models.map((model) => model.id)), [models]);
 
+  const unregisteredLocal = useMemo(
+    () => localModels.filter((model) => !model.registered && !registered.has(model.id)),
+    [localModels, registered],
+  );
+
   const refresh = async () => {
-    await Promise.all([loadModels(), loadModelCatalog(catalogCategory, false, Math.max(12, catalog.length))]);
+    await Promise.all([
+      loadModels(),
+      loadModelCatalog(catalogCategory, false, Math.max(12, catalog.length)),
+      loadLocalModels(),
+    ]);
+  };
+
+  const addLocal = async (model: LocalModel) => {
+    setRegistering(model.id);
+    try {
+      await registerLocalModel(model.id);
+      toast.success(`${model.id} added to Aegis`);
+    } catch (error) {
+      toast.error(error instanceof GatewayAPIError ? gatewayErrorMessage(error) : 'Could not add model');
+    } finally {
+      setRegistering('');
+    }
   };
 
   const selectCategory = async (category: CatalogCategory) => {
@@ -114,6 +142,47 @@ export default function ModelList(): JSX.Element {
               )}
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <section className="panel overflow-hidden">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-muted">Installed on this machine</div>
+            <div className="mt-1 flex items-center gap-2 text-[10px] text-muted">
+              {localModelsReachable ? (
+                <Wifi className="h-3 w-3 text-success" />
+              ) : (
+                <WifiOff className="h-3 w-3 text-warn" />
+              )}
+              <span>
+                {localModelsReachable
+                  ? 'Detected from your local Ollama install'
+                  : 'Ollama not reachable — start it to detect local models'}
+              </span>
+            </div>
+          </div>
+          <button className="command-button" type="button" onClick={() => void refresh()}>
+            <RefreshCw className="h-3.5 w-3.5" />
+            Refresh
+          </button>
+        </div>
+        <div className="grid gap-3 p-4 lg:grid-cols-2">
+          {unregisteredLocal.map((model) => (
+            <LocalCard
+              key={model.id}
+              model={model}
+              busy={registering === model.id}
+              onRegister={() => void addLocal(model)}
+            />
+          ))}
+          {unregisteredLocal.length === 0 && (
+            <div className="py-8 text-center text-xs text-muted lg:col-span-2">
+              {localModelsReachable
+                ? 'Every locally installed model is already registered in Aegis.'
+                : 'No local models detected.'}
+            </div>
+          )}
         </div>
       </section>
 
@@ -277,6 +346,45 @@ function CatalogCard({
         <button className="command-button" type="button" disabled={disabled} onClick={onDownload}>
           {installed ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />}
           {installed ? 'Installed' : downloading ? 'Downloading' : 'Download'}
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function LocalCard({
+  model,
+  busy,
+  onRegister,
+}: {
+  model: LocalModel;
+  busy: boolean;
+  onRegister: () => void;
+}): JSX.Element {
+  return (
+    <article className="border border-border bg-base p-4 transition hover:bg-elevated">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="truncate text-xs font-bold text-primary">{model.id}</h3>
+            <span className="pill border-success text-success">Installed</span>
+            {!model.in_catalog && <span className="pill border-border text-muted">Manual pull</span>}
+          </div>
+          <div className="mt-0.5 text-xs font-medium text-muted">Detected in local Ollama install</div>
+        </div>
+        <HardDrive className="h-3.5 w-3.5 shrink-0 text-accent" />
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
+        <Metric label="Size" value={`~${model.size_gb.toFixed(1)} GB`} />
+        <Metric label="Est. VRAM" value={`${model.vram_gb.toFixed(1)} GB`} />
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-[10px] text-muted">Not registered in Aegis yet</div>
+        <button className="command-button" type="button" disabled={busy} onClick={onRegister}>
+          <Plus className="h-3.5 w-3.5" />
+          {busy ? 'Adding...' : 'Add to Aegis'}
         </button>
       </div>
     </article>

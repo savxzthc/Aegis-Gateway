@@ -53,6 +53,19 @@ export interface ModelCatalogResponse {
   category: CatalogCategory;
 }
 
+export interface LocalModel {
+  id: string;
+  size_gb: number;
+  vram_gb: number;
+  registered: boolean;
+  in_catalog: boolean;
+}
+
+export interface LocalModelsResponse {
+  reachable: boolean;
+  data: LocalModel[];
+}
+
 export interface PullJob {
   model: string;
   status: 'downloading' | 'installed' | 'failed';
@@ -298,6 +311,8 @@ export function gatewayErrorMessage(error: unknown): string {
         return 'This API key is not allowed to use that model. Update the key allowlist in Keys.';
       case 'MODEL_NOT_IN_CATALOG':
         return 'That model is not available in the Aegis download catalog.';
+      case 'MODEL_NOT_INSTALLED':
+        return 'That model is not installed locally in Ollama. Pull it first, then refresh.';
       case 'MODEL_LIBRARY_OFFLINE':
         return 'The Ollama model library is not reachable. Check your internet connection and try again.';
       case 'MODEL_PULL_START_FAILED':
@@ -364,6 +379,15 @@ export async function getModelCatalog(category: CatalogCategory, limit: number, 
     timeout: 10000,
   });
   return { ...res.data, data: arrayOrEmpty(res.data.data) };
+}
+
+export async function getLocalModels(): Promise<LocalModelsResponse> {
+  const res = await client.get<LocalModelsResponse>('/models/local', { timeout: 10000 });
+  return { reachable: Boolean(res.data.reachable), data: arrayOrEmpty(res.data.data) };
+}
+
+export async function registerInstalledModel(model: string): Promise<void> {
+  await client.post('/models/register', { model }, { timeout: 15000 });
 }
 
 export async function pullModel(model: string): Promise<PullJob> {

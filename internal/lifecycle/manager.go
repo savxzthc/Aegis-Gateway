@@ -307,6 +307,25 @@ func (m *Manager) OllamaModels(ctx context.Context) map[string]bool {
 	return m.ollamaModels(ctx)
 }
 
+// OllamaModelInfo describes a model present in the local Ollama install.
+type OllamaModelInfo struct {
+	Name      string
+	SizeBytes int64
+}
+
+// OllamaModelDetails returns the installed Ollama models with their on-disk size.
+func (m *Manager) OllamaModelDetails(ctx context.Context) []OllamaModelInfo {
+	tags, err := m.ollamaTags(ctx)
+	if err != nil {
+		return nil
+	}
+	out := make([]OllamaModelInfo, 0, len(tags))
+	for _, item := range tags {
+		out = append(out, OllamaModelInfo{Name: item.Name, SizeBytes: item.Size})
+	}
+	return out
+}
+
 func (m *Manager) entryLocked(model string) *modelState {
 	entry, ok := m.states[model]
 	if !ok {
@@ -585,33 +604,44 @@ func (m *Manager) ollamaHasModel(ctx context.Context, model string) bool {
 }
 
 func (m *Manager) ollamaModels(ctx context.Context) map[string]bool {
-	baseURL := m.cfg.Get().Backend.OllamaBaseURL
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/tags", nil)
+	tags, err := m.ollamaTags(ctx)
 	if err != nil {
 		return map[string]bool{}
 	}
-	res, err := m.client.Do(req)
-	if err != nil {
-		return map[string]bool{}
-	}
-	defer drainAndClose(res.Body)
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return map[string]bool{}
-	}
-	var tags struct {
-		Models []struct {
-			Name string `json:"name"`
-		} `json:"models"`
-	}
-	if json.NewDecoder(res.Body).Decode(&tags) != nil {
-		return map[string]bool{}
-	}
-	models := make(map[string]bool, len(tags.Models))
-	for _, item := range tags.Models {
+	models := make(map[string]bool, len(tags))
+	for _, item := range tags {
 		models[item.Name] = true
 		models[normalizeOllamaModelName(item.Name)] = true
 	}
 	return models
+}
+
+type ollamaTag struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+func (m *Manager) ollamaTags(ctx context.Context) ([]ollamaTag, error) {
+	baseURL := m.cfg.Get().Backend.OllamaBaseURL
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/tags", nil)
+	if err != nil {
+		return nil, err
+	}
+	res, err := m.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer drainAndClose(res.Body)
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, fmt.Errorf("ollama tags failed with status %d", res.StatusCode)
+	}
+	var tags struct {
+		Models []ollamaTag `json:"models"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&tags); err != nil {
+		return nil, err
+	}
+	return tags.Models, nil
 }
 
 func drainAndClose(body io.ReadCloser) {

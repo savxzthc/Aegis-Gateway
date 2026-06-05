@@ -72,6 +72,8 @@ func NewRouter(server *Server, authMiddleware func(http.Handler) http.Handler) h
 		r.Post("/embeddings", server.Embeddings)
 		r.Get("/models", server.Models)
 		r.Get("/models/catalog", server.ModelCatalog)
+		r.Get("/models/local", server.LocalModels)
+		r.Post("/models/register", server.RegisterInstalledModel)
 		r.Post("/models/pull", server.PullModel)
 		r.Get("/models/pull/*", server.PullModelStatus)
 		r.Post("/models/unload", server.UnloadModel)

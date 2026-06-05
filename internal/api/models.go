@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -114,6 +115,75 @@ func (s *Server) ModelCatalog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// LocalModels handles GET /v1/models/local. It reports the Ollama models present
+// on this machine, whether or not they are in the download catalog, along with
+// whether each one is already registered in Aegis.
+func (s *Server) LocalModels(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	details := s.Lifecycle.OllamaModelDetails(ctx)
+	cfg := s.Config.Get()
+	data := make([]localModelObject, 0, len(details))
+	for _, item := range details {
+		sizeGB := bytesToGB(item.SizeBytes)
+		_, registered := cfg.Models.Registry[item.Name]
+		data = append(data, localModelObject{
+			ID:         item.Name,
+			SizeGB:     sizeGB,
+			VRAMGB:     estimateVRAMGB(sizeGB),
+			Registered: registered,
+			InCatalog:  catalogContains(item.Name),
+		})
+	}
+	sort.Slice(data, func(i, j int) bool {
+		if data[i].Registered != data[j].Registered {
+			return !data[i].Registered
+		}
+		return data[i].ID < data[j].ID
+	})
+	writeJSON(w, http.StatusOK, localModelsResponse{Reachable: details != nil, Data: data})
+}
+
+// RegisterInstalledModel handles POST /v1/models/register. It registers a model
+// that is already installed locally in Ollama so it becomes selectable, without
+// triggering a download.
+func (s *Server) RegisterInstalledModel(w http.ResponseWriter, r *http.Request) {
+	var req registerModelRequest
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON request body", "INVALID_JSON")
+		return
+	}
+	name := strings.TrimSpace(req.Model)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "model is required", "INVALID_REQUEST")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	details := s.Lifecycle.OllamaModelDetails(ctx)
+	var match *lifecycle.OllamaModelInfo
+	for i := range details {
+		if details[i].Name == name {
+			match = &details[i]
+			break
+		}
+	}
+	if match == nil {
+		writeError(w, http.StatusBadRequest, "model is not installed locally in Ollama", "MODEL_NOT_INSTALLED")
+		return
+	}
+	sizeGB := bytesToGB(match.SizeBytes)
+	if _, err := s.Config.RegisterModel(name, config.ModelConfig{
+		VRAMGB:      estimateVRAMGB(sizeGB),
+		Backend:     "ollama",
+		Description: "Detected in local Ollama install",
+	}); err != nil {
+		writePrivateError(w, r, http.StatusInternalServerError, "model registration failed", "MODEL_REGISTER_FAILED", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, registerModelResponse{Model: name, Registered: true})
+}
+
 // PullModel handles POST /v1/models/pull.
 func (s *Server) PullModel(w http.ResponseWriter, r *http.Request) {
 	var req pullModelRequest
@@ -223,6 +293,28 @@ type pullModelRequest struct {
 	Model string `json:"model"`
 }
 
+type registerModelRequest struct {
+	Model string `json:"model"`
+}
+
+type registerModelResponse struct {
+	Model      string `json:"model"`
+	Registered bool   `json:"registered"`
+}
+
+type localModelsResponse struct {
+	Reachable bool               `json:"reachable"`
+	Data      []localModelObject `json:"data"`
+}
+
+type localModelObject struct {
+	ID         string  `json:"id"`
+	SizeGB     float64 `json:"size_gb"`
+	VRAMGB     float64 `json:"vram_gb"`
+	Registered bool    `json:"registered"`
+	InCatalog  bool    `json:"in_catalog"`
+}
+
 var downloadCatalog = []catalogModel{
 	{ID: "tinyllama:1.1b", DisplayName: "TinyLlama 1.1B", Backend: "ollama", VRAMGB: 1.2, SizeGB: 0.7, Description: "Very small model for quick smoke tests and low-memory machines", UseCase: "Tiny chat", Category: "standard", LibraryURL: "https://ollama.com/library/tinyllama"},
 	{ID: "qwen2.5:0.5b", DisplayName: "Qwen 2.5 0.5B", Backend: "ollama", VRAMGB: 1.4, SizeGB: 0.4, Description: "Ultra-light multilingual model for basic local chat", UseCase: "Tiny chat", Category: "standard", LibraryURL: "https://ollama.com/library/qwen2.5"},
@@ -308,6 +400,28 @@ func catalogByID(id string) (catalogModel, bool) {
 		}
 	}
 	return catalogModel{}, false
+}
+
+func catalogContains(id string) bool {
+	_, ok := catalogByID(id)
+	return ok
+}
+
+func bytesToGB(size int64) float64 {
+	if size <= 0 {
+		return 0
+	}
+	return float64(size) / (1024 * 1024 * 1024)
+}
+
+// estimateVRAMGB approximates loaded VRAM from a model's on-disk size. Weights
+// dominate the footprint, with overhead for the KV cache and runtime buffers.
+func estimateVRAMGB(sizeGB float64) float64 {
+	if sizeGB <= 0 {
+		return 1.0
+	}
+	estimate := sizeGB*1.2 + 0.8
+	return math.Round(estimate*10) / 10
 }
 
 func pullJobMap(jobs []lifecycle.PullJob) map[string]lifecycle.PullJob {
