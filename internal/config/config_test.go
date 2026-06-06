@@ -64,3 +64,43 @@ func TestPatchEditableWritesCommentedConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestValidatePreservesCloudModelBackends(t *testing.T) {
+	cfg := Defaults()
+	cfg.Models.Registry = map[string]ModelConfig{
+		"openai-model": {
+			Backend: "OpenAI",
+		},
+		"openrouter-model": {
+			Backend: " openrouter ",
+		},
+		"anthropic-model": {
+			Backend: "ANTHROPIC",
+		},
+	}
+
+	if err := Validate(&cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	for model, want := range map[string]string{
+		"openai-model":     "openai",
+		"openrouter-model": "openrouter",
+		"anthropic-model":  "anthropic",
+	} {
+		if got := cfg.Models.Registry[model].Backend; got != want {
+			t.Fatalf("%s backend = %q, want %q", model, got, want)
+		}
+	}
+}
+
+func TestValidateRejectsCloudDefaultBackend(t *testing.T) {
+	for _, backend := range []string{"openai", "openrouter", "anthropic"} {
+		cfg := Defaults()
+		cfg.Backend.DefaultType = backend
+
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("default backend %q should be rejected", backend)
+		}
+	}
+}

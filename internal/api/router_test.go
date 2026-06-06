@@ -36,6 +36,25 @@ func TestLocalCORSMiddlewareAllowsLoopbackPreflight(t *testing.T) {
 	}
 }
 
+func TestAuthRouteAllowsPrivateNetworkPreflight(t *testing.T) {
+	handler := NewRouter(&Server{}, func(next http.Handler) http.Handler {
+		return next
+	})
+	req := httptest.NewRequest(http.MethodOptions, "/auth/login", nil)
+	req.Header.Set("Origin", "http://192.168.1.25:9000")
+	req.Header.Set("Access-Control-Request-Headers", "Content-Type")
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("got status %d body %s", res.Code, res.Body.String())
+	}
+	if got := res.Header().Get("Access-Control-Allow-Origin"); got != "http://192.168.1.25:9000" {
+		t.Fatalf("allow origin = %q", got)
+	}
+}
+
 func TestRouterAddsRequestAndVersionHeaders(t *testing.T) {
 	handler := NewRouter(&Server{Version: "test-version"}, func(next http.Handler) http.Handler {
 		return next
@@ -143,6 +162,10 @@ func TestIsLocalOrigin(t *testing.T) {
 		"https://localhost",
 		"http://127.0.0.1:5173",
 		"http://[::1]:5173",
+		"http://192.168.1.25:5173",
+		"http://10.0.0.25:5173",
+		"http://172.16.0.25:5173",
+		"https://[fd00::25]:8443",
 	} {
 		if !isLocalOrigin(origin) {
 			t.Fatalf("%s should be local", origin)

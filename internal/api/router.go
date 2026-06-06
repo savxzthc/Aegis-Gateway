@@ -53,6 +53,9 @@ func NewRouter(server *Server, authMiddleware func(http.Handler) http.Handler) h
 
 	r.Route("/auth", func(r chi.Router) {
 		r.Use(localCORSMiddleware)
+		r.Options("/*", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})
 		r.Post("/login", server.Login)
 		r.Post("/logout", server.Logout)
 		r.With(authMiddleware).Get("/me", server.Me)
@@ -231,7 +234,7 @@ func isLocalOrigin(origin string) bool {
 		return true
 	}
 	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
 }
 
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) error {

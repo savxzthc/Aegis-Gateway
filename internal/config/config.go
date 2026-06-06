@@ -345,7 +345,7 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("security.rate_limit_rpm must be zero or greater")
 	}
 	cfg.Backend.DefaultType = normalizeBackend(cfg.Backend.DefaultType)
-	if cfg.Backend.DefaultType == "" {
+	if cfg.Backend.DefaultType != "ollama" && cfg.Backend.DefaultType != "llamacpp" {
 		return fmt.Errorf("backend.default_type must be ollama or llamacpp")
 	}
 	cfg.Backend.OllamaBaseURL = strings.TrimRight(cfg.Backend.OllamaBaseURL, "/")
@@ -383,6 +383,12 @@ func normalizeBackend(value string) string {
 		return "ollama"
 	case "llamacpp", "llama.cpp", "llama-cpp":
 		return "llamacpp"
+	case "openai":
+		return "openai"
+	case "openrouter":
+		return "openrouter"
+	case "anthropic":
+		return "anthropic"
 	default:
 		return ""
 	}
