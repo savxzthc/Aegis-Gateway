@@ -5,6 +5,11 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: '127.0.0.1',
+    // Development-only proxy; production is served by the embedded Go binary.
+    proxy: {
+      '/v1': 'http://localhost:9000',
+      '/auth': 'http://localhost:9000',
+    },
   },
   build: {
     outDir: 'dist',

@@ -20,22 +20,26 @@ import (
 	"github.com/savxzthc/aegis-gateway/internal/hardware"
 	"github.com/savxzthc/aegis-gateway/internal/lifecycle"
 	modelrouter "github.com/savxzthc/aegis-gateway/internal/router"
+	"github.com/savxzthc/aegis-gateway/internal/uploads"
 )
 
 // Server holds API dependencies.
 type Server struct {
-	Config           *config.Manager
-	DB               *db.Store
-	HardwareProvider hardware.Provider
-	VRAMRouter       *modelrouter.VRAMRouter
-	Lifecycle        *lifecycle.Manager
-	BackendsMu       sync.RWMutex
-	Backends         map[string]backends.Backend
-	StartedAt        time.Time
-	Version          string
-	BuildTime        string
-	GoVersion        string
-	Shutdown         <-chan struct{}
+	Config            *config.Manager
+	DB                *db.Store
+	HardwareProvider  hardware.Provider
+	VRAMRouter        *modelrouter.VRAMRouter
+	Lifecycle         *lifecycle.Manager
+	BackendsMu        sync.RWMutex
+	Backends          map[string]backends.Backend
+	StartedAt         time.Time
+	Version           string
+	BuildTime         string
+	GoVersion         string
+	Shutdown          <-chan struct{}
+	Uploads           *uploads.Store
+	HardwareStreamsMu sync.Mutex
+	HardwareStreams   map[string]int
 }
 
 // NewRouter wires middleware and Aegis API routes.
@@ -76,6 +80,7 @@ func NewRouter(server *Server, authMiddleware func(http.Handler) http.Handler) h
 		r.Get("/models", server.Models)
 		r.Get("/models/catalog", server.ModelCatalog)
 		r.Get("/models/local", server.LocalModels)
+		r.Get("/models/discover", server.DiscoverModels)
 		r.Post("/models/register", server.RegisterInstalledModel)
 		r.Post("/models/pull", server.PullModel)
 		r.Get("/models/pull/*", server.PullModelStatus)
@@ -84,6 +89,19 @@ func NewRouter(server *Server, authMiddleware func(http.Handler) http.Handler) h
 		r.Get("/hardware/stream", server.HardwareStream)
 		r.Get("/stats", server.Stats)
 		r.Get("/logs", server.Logs)
+		r.Get("/conversations", server.ListConversations)
+		r.Post("/conversations", server.CreateConversation)
+		r.Get("/conversations/{id}", server.GetConversation)
+		r.Patch("/conversations/{id}", server.PatchConversation)
+		r.Delete("/conversations/{id}", server.DeleteConversation)
+		r.Get("/conversations/{id}/export", server.ExportConversation)
+		r.Get("/compare", server.ListComparisons)
+		r.Post("/compare/start", server.StartComparison)
+		r.Get("/compare/{id}", server.GetComparison)
+		r.Post("/compare/{id}/vote", server.VoteComparison)
+		r.Post("/uploads", server.UploadFile)
+		r.Get("/uploads/{id}", server.GetUpload)
+		r.Delete("/uploads/{id}", server.DeleteUpload)
 		r.Get("/keys", server.ListKeys)
 		r.Post("/keys", server.CreateKey)
 		r.Patch("/keys/{id}/models", server.UpdateKeyModels)
@@ -133,6 +151,8 @@ func writeJSON(w http.ResponseWriter, status int, value interface{}) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", buf.Len()))
+	// Explicit status is required for non-200 responses; net/http would infer
+	// 200 on the first Write when status is OK.
 	w.WriteHeader(status)
 	_, _ = w.Write(buf.Bytes())
 }
@@ -181,6 +201,8 @@ func recoverJSON(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := &statusRecorder{ResponseWriter: w}
 		defer func() {
+			// Recovery runs on the same handler goroutine that owns recorder, so
+			// the wrote flag does not need synchronization.
 			recovered := recover()
 			if recovered == nil {
 				return
@@ -210,9 +232,11 @@ func localCORSMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-		w.Header().Set("Access-Control-Expose-Headers", "X-Aegis-Routed-Model, X-Aegis-Fallback, X-Request-Id, X-Aegis-Version")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Aegis-Routed-Model, X-Aegis-Fallback, X-Aegis-Conversation-ID, X-Aegis-Search-Used, X-Aegis-TPS, X-Request-Id, X-Aegis-Version")
 		w.Header().Set("Access-Control-Max-Age", "600")
 		w.Header().Add("Vary", "Origin")
+		// Bearer-auth APIs do not need credentialed CORS. Session cookies remain
+		// same-origin under the embedded dashboard.
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

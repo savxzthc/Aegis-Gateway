@@ -22,12 +22,12 @@ type User struct {
 }
 
 type UserView struct {
-	ID        string     `json:"id"`
-	Username  string     `json:"username"`
-	Role      string     `json:"role"`
-	TOTPEnabled bool     `json:"totp_enabled"`
-	CreatedAt time.Time  `json:"created_at"`
-	LastLogin *time.Time `json:"last_login"`
+	ID          string     `json:"id"`
+	Username    string     `json:"username"`
+	Role        string     `json:"role"`
+	TOTPEnabled bool       `json:"totp_enabled"`
+	CreatedAt   time.Time  `json:"created_at"`
+	LastLogin   *time.Time `json:"last_login"`
 }
 
 func (s *Store) CreateUser(ctx context.Context, u User) error {

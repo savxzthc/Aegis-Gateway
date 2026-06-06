@@ -47,7 +47,7 @@ func (b *LlamaCppBackend) Ping(ctx context.Context) error {
 func (b *LlamaCppBackend) Chat(ctx context.Context, req *ChatRequest, stream bool) (*ChatResponse, error) {
 	body := llamaChatRequest{
 		Model:       req.Model,
-		Messages:    wireMessages(req.Messages),
+		Messages:    structuredWireMessages(req.Messages),
 		Stream:      false,
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
@@ -90,7 +90,7 @@ func (b *LlamaCppBackend) Chat(ctx context.Context, req *ChatRequest, stream boo
 func (b *LlamaCppBackend) StreamChat(ctx context.Context, req *ChatRequest, ch chan<- StreamChunk) error {
 	body := llamaChatRequest{
 		Model:       req.Model,
-		Messages:    wireMessages(req.Messages),
+		Messages:    structuredWireMessages(req.Messages),
 		Stream:      true,
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
@@ -157,14 +157,14 @@ func (b *LlamaCppBackend) StreamChat(ctx context.Context, req *ChatRequest, ch c
 }
 
 type llamaChatRequest struct {
-	Model       string            `json:"model"`
-	Messages    []wireChatMessage `json:"messages"`
-	Stream      bool              `json:"stream"`
-	MaxTokens   *int              `json:"max_tokens,omitempty"`
-	Temperature *float64          `json:"temperature,omitempty"`
-	TopP        *float64          `json:"top_p,omitempty"`
-	Stop        []string          `json:"stop,omitempty"`
-	Seed        *int              `json:"seed,omitempty"`
+	Model       string                      `json:"model"`
+	Messages    []structuredWireChatMessage `json:"messages"`
+	Stream      bool                        `json:"stream"`
+	MaxTokens   *int                        `json:"max_tokens,omitempty"`
+	Temperature *float64                    `json:"temperature,omitempty"`
+	TopP        *float64                    `json:"top_p,omitempty"`
+	Stop        []string                    `json:"stop,omitempty"`
+	Seed        *int                        `json:"seed,omitempty"`
 }
 
 type llamaChatResponse struct {

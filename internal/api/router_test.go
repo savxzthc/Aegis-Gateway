@@ -31,7 +31,7 @@ func TestLocalCORSMiddlewareAllowsLoopbackPreflight(t *testing.T) {
 	if got := res.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
 		t.Fatalf("allow origin = %q", got)
 	}
-	if got := res.Header().Get("Access-Control-Expose-Headers"); got != "X-Aegis-Routed-Model, X-Aegis-Fallback, X-Request-Id, X-Aegis-Version" {
+	if got := res.Header().Get("Access-Control-Expose-Headers"); got != "X-Aegis-Routed-Model, X-Aegis-Fallback, X-Aegis-Conversation-ID, X-Aegis-Search-Used, X-Aegis-TPS, X-Request-Id, X-Aegis-Version" {
 		t.Fatalf("expose headers = %q", got)
 	}
 }

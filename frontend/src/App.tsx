@@ -2,6 +2,7 @@ import { KeyRound, ShieldCheck, TriangleAlert } from 'lucide-react';
 import { Component, ErrorInfo, FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import toast, { Toaster } from 'react-hot-toast';
 import ChatConsole from './components/ChatConsole';
+import Compare from './components/Compare';
 import Dashboard from './components/Dashboard';
 import KeyManager from './components/KeyManager';
 import Layout, { ViewKey } from './components/Layout';
@@ -13,6 +14,7 @@ import { useGatewayStore } from './store/useGatewayStore';
 
 const titles: Record<ViewKey, string> = {
   chat: 'Chat Console',
+  compare: 'Compare Models',
   dashboard: 'Dashboard',
   models: 'Models',
   templates: 'Templates',
@@ -138,6 +140,7 @@ function AppContent(): JSX.Element {
         onSignOut={clearToken}
       >
         {view === 'chat' && <ChatConsole />}
+        {view === 'compare' && <Compare />}
         {view === 'dashboard' && <Dashboard />}
         {view === 'models' && <ModelList />}
         {view === 'templates' && <TemplateLibrary />}

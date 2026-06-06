@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,15 +22,22 @@ type Config struct {
 	Security SecurityConfig `toml:"security" json:"security"`
 	Backend  BackendConfig  `toml:"backend" json:"backend"`
 	Models   ModelsConfig   `toml:"models" json:"models"`
+	Search   SearchConfig   `toml:"search" json:"search"`
 }
 
 // ServerConfig contains listener and lifecycle settings.
 type ServerConfig struct {
-	Host                  string `toml:"host" json:"host"`
-	Port                  int    `toml:"port" json:"port"`
-	IdleTimeoutMinutes    int    `toml:"idle_timeout_minutes" json:"idle_timeout_minutes"`
-	RequestTimeoutSeconds int    `toml:"request_timeout_seconds" json:"request_timeout_seconds"`
-	SystemPrompt          string `toml:"system_prompt" json:"system_prompt"`
+	Host                  string   `toml:"host" json:"host"`
+	Port                  int      `toml:"port" json:"port"`
+	IdleTimeoutMinutes    int      `toml:"idle_timeout_minutes" json:"idle_timeout_minutes"`
+	RequestTimeoutSeconds int      `toml:"request_timeout_seconds" json:"request_timeout_seconds"`
+	SystemPrompt          string   `toml:"system_prompt" json:"system_prompt"`
+	SecureCookies         bool     `toml:"secure_cookies" json:"secure_cookies"`
+	SessionTTLDays        int      `toml:"session_ttl_days" json:"session_ttl_days"`
+	TrustedProxies        []string `toml:"trusted_proxies" json:"trusted_proxies"`
+	UploadsDir            string   `toml:"uploads_dir" json:"uploads_dir"`
+	MaxUploadBytes        int64    `toml:"max_upload_bytes" json:"max_upload_bytes"`
+	VisionModelPatterns   []string `toml:"vision_model_patterns" json:"vision_model_patterns"`
 }
 
 // SecurityConfig contains local authentication and rate-limit settings.
@@ -39,13 +48,13 @@ type SecurityConfig struct {
 
 // BackendConfig contains backend connection settings.
 type BackendConfig struct {
-	DefaultType        string        `toml:"default_type" json:"default_type"`
-	OllamaBaseURL      string        `toml:"ollama_base_url" json:"ollama_base_url"`
-	LlamaCppBaseURL    string        `toml:"llamacpp_base_url" json:"llamacpp_base_url"`
-	OpenAI             OpenAIConfig  `toml:"openai" json:"openai"`
-	OpenRouter         OpenRouterConfig `toml:"openrouter" json:"openrouter"`
-	Anthropic          AnthropicConfig `toml:"anthropic" json:"anthropic"`
-	MetricsAddr        string        `toml:"metrics_addr" json:"metrics_addr"`
+	DefaultType     string           `toml:"default_type" json:"default_type"`
+	OllamaBaseURL   string           `toml:"ollama_base_url" json:"ollama_base_url"`
+	LlamaCppBaseURL string           `toml:"llamacpp_base_url" json:"llamacpp_base_url"`
+	OpenAI          OpenAIConfig     `toml:"openai" json:"openai"`
+	OpenRouter      OpenRouterConfig `toml:"openrouter" json:"openrouter"`
+	Anthropic       AnthropicConfig  `toml:"anthropic" json:"anthropic"`
+	MetricsAddr     string           `toml:"metrics_addr" json:"metrics_addr"`
 }
 
 // OpenAIConfig contains OpenAI backend settings.
@@ -63,15 +72,24 @@ type OpenRouterConfig struct {
 
 // AnthropicConfig contains Anthropic backend settings.
 type AnthropicConfig struct {
-	APIKey            string `toml:"api_key" json:"-"`
-	BaseURL           string `toml:"base_url" json:"base_url"`
-	AnthropicVersion  string `toml:"anthropic_version" json:"anthropic_version"`
+	APIKey           string `toml:"api_key" json:"-"`
+	BaseURL          string `toml:"base_url" json:"base_url"`
+	AnthropicVersion string `toml:"anthropic_version" json:"anthropic_version"`
 }
 
 // ModelsConfig contains the model registry.
 type ModelsConfig struct {
 	Registry map[string]ModelConfig `toml:"registry" json:"registry"`
 	Aliases  map[string]string      `toml:"aliases" json:"aliases"`
+}
+
+// SearchConfig controls optional gateway-level web search grounding.
+type SearchConfig struct {
+	Enabled        bool   `toml:"enabled" json:"enabled"`
+	Provider       string `toml:"provider" json:"provider"`
+	SearxNGBaseURL string `toml:"searxng_base_url" json:"searxng_base_url"`
+	MaxResults     int    `toml:"max_results" json:"max_results"`
+	TimeoutSeconds int    `toml:"timeout_seconds" json:"timeout_seconds"`
 }
 
 // ModelConfig describes a known model.
@@ -96,6 +114,10 @@ type EditablePatch struct {
 	IdleTimeoutMinutes *int    `json:"idle_timeout_minutes"`
 	RateLimitRPM       *int    `json:"rate_limit_rpm"`
 	OllamaBaseURL      *string `json:"ollama_base_url"`
+	SearchEnabled      *bool   `json:"search_enabled"`
+	SearchProvider     *string `json:"search_provider"`
+	SecureCookies      *bool   `json:"secure_cookies"`
+	SessionTTLDays     *int    `json:"session_ttl_days"`
 }
 
 // Defaults returns the built-in default configuration.
@@ -107,6 +129,10 @@ func Defaults() Config {
 			IdleTimeoutMinutes:    10,
 			RequestTimeoutSeconds: 300,
 			SystemPrompt:          DefaultSystemPrompt(),
+			SessionTTLDays:        7,
+			UploadsDir:            "uploads",
+			MaxUploadBytes:        20 << 20,
+			VisionModelPatterns:   []string{"llava", "bakllava", "vision", "vl", "minicpm"},
 		},
 		Security: SecurityConfig{
 			RateLimitRPM:    60,
@@ -138,6 +164,12 @@ func Defaults() Config {
 					SystemPrompt: "Phi-3 Mini addendum: optimize for short, high-signal answers. State assumptions clearly, avoid long speculative chains, and prefer small actionable steps that fit limited context and compute budgets.",
 				},
 			},
+		},
+		Search: SearchConfig{
+			Provider:       "searxng",
+			SearxNGBaseURL: "http://127.0.0.1:8080",
+			MaxResults:     5,
+			TimeoutSeconds: 5,
 		},
 	}
 }
@@ -266,6 +298,18 @@ func (m *Manager) PatchEditable(patch EditablePatch) (Config, error) {
 	if patch.OllamaBaseURL != nil {
 		next.Backend.OllamaBaseURL = strings.TrimRight(*patch.OllamaBaseURL, "/")
 	}
+	if patch.SearchEnabled != nil {
+		next.Search.Enabled = *patch.SearchEnabled
+	}
+	if patch.SearchProvider != nil {
+		next.Search.Provider = *patch.SearchProvider
+	}
+	if patch.SecureCookies != nil {
+		next.Server.SecureCookies = *patch.SecureCookies
+	}
+	if patch.SessionTTLDays != nil {
+		next.Server.SessionTTLDays = *patch.SessionTTLDays
+	}
 	if err := Validate(&next); err != nil {
 		m.mu.Unlock()
 		return Config{}, err
@@ -341,6 +385,29 @@ func Validate(cfg *Config) error {
 	if cfg.Server.RequestTimeoutSeconds < 30 {
 		return fmt.Errorf("server.request_timeout_seconds must be at least 30")
 	}
+	if cfg.Server.SessionTTLDays == 0 {
+		cfg.Server.SessionTTLDays = 7
+	}
+	if cfg.Server.SessionTTLDays < 1 {
+		return fmt.Errorf("server.session_ttl_days must be at least 1")
+	}
+	if strings.TrimSpace(cfg.Server.UploadsDir) == "" {
+		cfg.Server.UploadsDir = "uploads"
+	}
+	if cfg.Server.MaxUploadBytes == 0 {
+		cfg.Server.MaxUploadBytes = 20 << 20
+	}
+	if cfg.Server.MaxUploadBytes < 1 {
+		return fmt.Errorf("server.max_upload_bytes must be greater than zero")
+	}
+	if len(cfg.Server.VisionModelPatterns) == 0 {
+		cfg.Server.VisionModelPatterns = []string{"llava", "bakllava", "vision", "vl", "minicpm"}
+	}
+	for _, cidr := range cfg.Server.TrustedProxies {
+		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
+			return fmt.Errorf("server.trusted_proxies contains invalid CIDR %q", cidr)
+		}
+	}
 	if cfg.Security.RateLimitRPM < 0 {
 		return fmt.Errorf("security.rate_limit_rpm must be zero or greater")
 	}
@@ -366,13 +433,52 @@ func Validate(cfg *Config) error {
 		if model.VRAMGB < 0 {
 			return fmt.Errorf("model %s vram_gb must be zero or greater", name)
 		}
-		model.Backend = normalizeBackend(model.Backend)
+		rawBackend := strings.TrimSpace(model.Backend)
+		if rawBackend != "" && !knownBackend(rawBackend) {
+			return fmt.Errorf("model %s backend %q is unknown; expected ollama, llamacpp, openai, openrouter, or anthropic", name, rawBackend)
+		}
+		model.Backend = normalizeBackend(rawBackend)
 		if model.Backend == "" {
 			model.Backend = cfg.Backend.DefaultType
 		}
 		cfg.Models.Registry[name] = model
 	}
+	cfg.Search.Provider = strings.ToLower(strings.TrimSpace(cfg.Search.Provider))
+	if cfg.Search.Provider == "" {
+		cfg.Search.Provider = "searxng"
+	}
+	if cfg.Search.MaxResults == 0 {
+		cfg.Search.MaxResults = 5
+	}
+	if cfg.Search.MaxResults < 1 || cfg.Search.MaxResults > 20 {
+		return fmt.Errorf("search.max_results must be between 1 and 20")
+	}
+	if cfg.Search.TimeoutSeconds == 0 {
+		cfg.Search.TimeoutSeconds = 5
+	}
+	if cfg.Search.TimeoutSeconds < 1 || cfg.Search.TimeoutSeconds > 30 {
+		return fmt.Errorf("search.timeout_seconds must be between 1 and 30")
+	}
+	if cfg.Search.Enabled && cfg.Search.Provider != "searxng" && cfg.Search.Provider != "duckduckgo" {
+		return fmt.Errorf("search.provider must be searxng or duckduckgo")
+	}
+	cfg.Search.SearxNGBaseURL = strings.TrimRight(strings.TrimSpace(cfg.Search.SearxNGBaseURL), "/")
+	if cfg.Search.Enabled && cfg.Search.Provider == "searxng" {
+		parsed, err := url.Parse(cfg.Search.SearxNGBaseURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return fmt.Errorf("search.searxng_base_url must be an absolute http or https URL")
+		}
+	}
 	return nil
+}
+
+func knownBackend(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "ollama", "llamacpp", "llama.cpp", "llama-cpp", "openai", "openrouter", "anthropic":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeBackend(value string) string {
@@ -396,7 +502,18 @@ func normalizeBackend(value string) string {
 
 func cloneConfig(cfg Config) Config {
 	cfg.Models.Registry = cloneRegistry(cfg.Models.Registry)
+	cfg.Models.Aliases = cloneStringsMap(cfg.Models.Aliases)
+	cfg.Server.TrustedProxies = append([]string(nil), cfg.Server.TrustedProxies...)
+	cfg.Server.VisionModelPatterns = append([]string(nil), cfg.Server.VisionModelPatterns...)
 	return cfg
+}
+
+func cloneStringsMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func cloneRegistry(in map[string]ModelConfig) map[string]ModelConfig {
@@ -431,13 +548,8 @@ func writeTOML(path string, cfg Config) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tempPath, path); err != nil {
-		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return err
-		}
-		if retryErr := os.Rename(tempPath, path); retryErr != nil {
-			return retryErr
-		}
+	if err := replaceFile(tempPath, path); err != nil {
+		return err
 	}
 	cleanup = false
 	return nil
@@ -453,6 +565,14 @@ func commentedTOML(cfg Config) string {
 	fmt.Fprintf(&b, "idle_timeout_minutes = %d\n", cfg.Server.IdleTimeoutMinutes)
 	fmt.Fprintln(&b, "# Maximum seconds a model request may run before Aegis cancels it.")
 	fmt.Fprintf(&b, "request_timeout_seconds = %d\n", cfg.Server.RequestTimeoutSeconds)
+	fmt.Fprintln(&b, "# Set true only when TLS terminates in front of Aegis.")
+	fmt.Fprintf(&b, "secure_cookies = %t\n", cfg.Server.SecureCookies)
+	fmt.Fprintf(&b, "session_ttl_days = %d\n", cfg.Server.SessionTTLDays)
+	fmt.Fprintln(&b, "# Proxy CIDRs allowed to supply X-Forwarded-For/X-Real-IP.")
+	fmt.Fprintf(&b, "trusted_proxies = %s\n", tomlStringArray(cfg.Server.TrustedProxies))
+	fmt.Fprintf(&b, "uploads_dir = %s\n", strconv.Quote(cfg.Server.UploadsDir))
+	fmt.Fprintf(&b, "max_upload_bytes = %d\n", cfg.Server.MaxUploadBytes)
+	fmt.Fprintf(&b, "vision_model_patterns = %s\n", tomlStringArray(cfg.Server.VisionModelPatterns))
 	fmt.Fprintln(&b, "# Default coding assistant system prompt injected when a request does not already provide one.")
 	fmt.Fprintf(&b, "system_prompt = %s\n\n", tomlMultilineString(cfg.Server.SystemPrompt))
 
@@ -469,6 +589,16 @@ func commentedTOML(cfg Config) string {
 	fmt.Fprintf(&b, "ollama_base_url = %s\n", strconv.Quote(cfg.Backend.OllamaBaseURL))
 	fmt.Fprintln(&b, "# Base URL of your llama.cpp server (if used).")
 	fmt.Fprintf(&b, "llamacpp_base_url = %s\n\n", strconv.Quote(cfg.Backend.LlamaCppBaseURL))
+	fmt.Fprintln(&b, "# Cloud API keys are intentionally not written here.")
+	fmt.Fprintln(&b, "# Use OPENAI_API_KEY, OPENROUTER_API_KEY, and ANTHROPIC_API_KEY environment variables.")
+	fmt.Fprintln(&b)
+
+	fmt.Fprintln(&b, "[search]")
+	fmt.Fprintf(&b, "enabled = %t\n", cfg.Search.Enabled)
+	fmt.Fprintf(&b, "provider = %s\n", strconv.Quote(cfg.Search.Provider))
+	fmt.Fprintf(&b, "searxng_base_url = %s\n", strconv.Quote(cfg.Search.SearxNGBaseURL))
+	fmt.Fprintf(&b, "max_results = %d\n", cfg.Search.MaxResults)
+	fmt.Fprintf(&b, "timeout_seconds = %d\n\n", cfg.Search.TimeoutSeconds)
 
 	fmt.Fprintln(&b, "# Model registry. Add any model you want Aegis to know about.")
 	fmt.Fprintln(&b, "# vram_gb is the approximate VRAM this model uses when loaded at default quant.")
@@ -484,6 +614,25 @@ func commentedTOML(cfg Config) string {
 		fmt.Fprintf(&b, "  system_prompt = %s\n", tomlMultilineString(model.SystemPrompt))
 	}
 	return b.String()
+}
+
+func tomlStringArray(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, strconv.Quote(value))
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+// SupportsVision reports whether a configured model name matches a vision pattern.
+func SupportsVision(cfg Config, modelName string) bool {
+	name := strings.ToLower(modelName)
+	for _, pattern := range cfg.Server.VisionModelPatterns {
+		if pattern = strings.ToLower(strings.TrimSpace(pattern)); pattern != "" && strings.Contains(name, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func tomlMultilineString(value string) string {

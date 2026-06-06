@@ -1,7 +1,7 @@
-import { BarChart3, Cpu, FileText, KeyRound, ListTree, LogOut, MessageSquare, ScrollText, Settings } from 'lucide-react';
+import { BarChart3, Cpu, FileText, GitCompareArrows, KeyRound, ListTree, LogOut, MessageSquare, ScrollText, Settings } from 'lucide-react';
 import { ReactNode } from 'react';
 
-export type ViewKey = 'chat' | 'dashboard' | 'models' | 'templates' | 'logs' | 'keys' | 'settings';
+export type ViewKey = 'chat' | 'compare' | 'dashboard' | 'models' | 'templates' | 'logs' | 'keys' | 'settings';
 
 interface LayoutProps {
   activeView: ViewKey;
@@ -19,6 +19,7 @@ const navItems: Array<{
   icon: typeof BarChart3;
 }> = [
   { key: 'chat', label: 'Chat Console', icon: MessageSquare },
+  { key: 'compare', label: 'Compare', icon: GitCompareArrows },
   { key: 'dashboard', label: 'Dashboard', icon: BarChart3 },
   { key: 'models', label: 'Models', icon: ListTree },
   { key: 'templates', label: 'Templates', icon: FileText },
@@ -62,6 +63,7 @@ export default function Layout({
                     : 'border-transparent text-muted hover:border-border hover:bg-elevated hover:text-primary'
                 }`}
                 type="button"
+                aria-current={active ? 'page' : undefined}
                 onClick={() => onNavigate(item.key)}
               >
                 <Icon className="h-3.5 w-3.5 shrink-0" />

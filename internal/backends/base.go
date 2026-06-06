@@ -28,61 +28,101 @@ type ChatMessage struct {
 	Name    string         `json:"name,omitempty"`
 }
 
-// MessageContent stores normalized text from OpenAI chat message content.
+// MessageContent preserves ordered OpenAI text and image content parts.
 type MessageContent struct {
-	text string
+	parts []ChatContentPart
 }
 
 // ChatContentPart is a supported OpenAI chat content part.
 type ChatContentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+}
+
+// ImageURL is an OpenAI-compatible image reference.
+type ImageURL struct {
+	URL string `json:"url"`
 }
 
 // NewMessageContent creates text chat content.
 func NewMessageContent(text string) MessageContent {
-	return MessageContent{text: text}
+	return MessageContent{parts: []ChatContentPart{{Type: "text", Text: text}}}
+}
+
+// NewMessageParts creates structured multimodal message content.
+func NewMessageParts(parts []ChatContentPart) MessageContent {
+	return MessageContent{parts: append([]ChatContentPart(nil), parts...)}
 }
 
 // String returns normalized message text.
 func (c MessageContent) String() string {
-	return c.text
+	texts := make([]string, 0, len(c.parts))
+	for _, part := range c.parts {
+		if part.Type == "text" && part.Text != "" {
+			texts = append(texts, part.Text)
+		}
+	}
+	return strings.Join(texts, "\n")
+}
+
+// Parts returns a defensive copy of the ordered content parts.
+func (c MessageContent) Parts() []ChatContentPart {
+	return append([]ChatContentPart(nil), c.parts...)
+}
+
+// HasImages reports whether the message includes image content.
+func (c MessageContent) HasImages() bool {
+	for _, part := range c.parts {
+		if part.Type == "image_url" && part.ImageURL != nil && strings.TrimSpace(part.ImageURL.URL) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Empty reports whether the content has no non-space text.
 func (c MessageContent) Empty() bool {
-	return strings.TrimSpace(c.text) == ""
+	return strings.TrimSpace(c.String()) == "" && !c.HasImages()
 }
 
-// MarshalJSON encodes message content as an OpenAI-compatible text string.
+// MarshalJSON uses the compact string form for text-only content.
 func (c MessageContent) MarshalJSON() ([]byte, error) {
-	return json.Marshal(c.text)
+	if !c.HasImages() {
+		return json.Marshal(c.String())
+	}
+	return json.Marshal(c.parts)
 }
 
-// UnmarshalJSON decodes string or text-part array message content.
+// UnmarshalJSON decodes string or ordered text/image part content.
 func (c *MessageContent) UnmarshalJSON(data []byte) error {
 	data = bytes.TrimSpace(data)
 	if bytes.Equal(data, []byte("null")) {
-		c.text = ""
+		c.parts = nil
 		return nil
 	}
 	var text string
 	if err := json.Unmarshal(data, &text); err == nil {
-		c.text = text
+		c.parts = []ChatContentPart{{Type: "text", Text: text}}
 		return nil
 	}
 	var parts []ChatContentPart
 	if err := json.Unmarshal(data, &parts); err == nil {
-		texts := make([]string, 0, len(parts))
-		for _, part := range parts {
-			if part.Type == "text" && part.Text != "" {
-				texts = append(texts, part.Text)
+		for i, part := range parts {
+			switch part.Type {
+			case "text":
+			case "image_url":
+				if part.ImageURL == nil || strings.TrimSpace(part.ImageURL.URL) == "" {
+					return fmt.Errorf("message content part %d image_url.url is required", i)
+				}
+			default:
+				return fmt.Errorf("message content part %d has unsupported type %q", i, part.Type)
 			}
 		}
-		c.text = strings.Join(texts, "\n")
+		c.parts = append([]ChatContentPart(nil), parts...)
 		return nil
 	}
-	return fmt.Errorf("message content must be a string or an array of text parts")
+	return fmt.Errorf("message content must be a string or an array of text/image parts")
 }
 
 // ChatRequest is the internal typed chat completion request.
@@ -100,11 +140,39 @@ type ChatRequest struct {
 	N                *int          `json:"n,omitempty"`
 	User             string        `json:"user,omitempty"`
 	StreamOptions    StreamOptions `json:"stream_options,omitempty"`
+	ConversationID   string        `json:"conversation_id,omitempty"`
+	Persist          bool          `json:"persist,omitempty"`
+	Search           *bool         `json:"search,omitempty"`
 }
 
 // StreamOptions contains OpenAI-compatible streaming options.
 type StreamOptions struct {
 	IncludeUsage bool `json:"include_usage,omitempty"`
+}
+
+type upstreamChatRequest struct {
+	Model            string        `json:"model"`
+	Messages         []ChatMessage `json:"messages"`
+	Stream           bool          `json:"stream,omitempty"`
+	MaxTokens        *int          `json:"max_tokens,omitempty"`
+	Temperature      *float64      `json:"temperature,omitempty"`
+	TopP             *float64      `json:"top_p,omitempty"`
+	Stop             StopSequences `json:"stop,omitempty"`
+	Seed             *int          `json:"seed,omitempty"`
+	PresencePenalty  *float64      `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64      `json:"frequency_penalty,omitempty"`
+	N                *int          `json:"n,omitempty"`
+	User             string        `json:"user,omitempty"`
+	StreamOptions    StreamOptions `json:"stream_options,omitempty"`
+}
+
+func upstreamRequest(req *ChatRequest) upstreamChatRequest {
+	return upstreamChatRequest{
+		Model: req.Model, Messages: req.Messages, Stream: req.Stream, MaxTokens: req.MaxTokens,
+		Temperature: req.Temperature, TopP: req.TopP, Stop: req.Stop, Seed: req.Seed,
+		PresencePenalty: req.PresencePenalty, FrequencyPenalty: req.FrequencyPenalty,
+		N: req.N, User: req.User, StreamOptions: req.StreamOptions,
+	}
 }
 
 // CompletionRequest is the typed legacy completion request.
@@ -121,6 +189,9 @@ type CompletionRequest struct {
 	FrequencyPenalty *float64         `json:"frequency_penalty,omitempty"`
 	N                *int             `json:"n,omitempty"`
 	User             string           `json:"user,omitempty"`
+	ConversationID   string           `json:"conversation_id,omitempty"`
+	Persist          bool             `json:"persist,omitempty"`
+	Search           *bool            `json:"search,omitempty"`
 }
 
 // Usage contains approximate token usage reported by a backend.
@@ -246,6 +317,19 @@ func wireMessages(messages []ChatMessage) []wireChatMessage {
 			Role:    backendRole(message.Role),
 			Content: message.Content.String(),
 		})
+	}
+	return out
+}
+
+type structuredWireChatMessage struct {
+	Role    string         `json:"role"`
+	Content MessageContent `json:"content"`
+}
+
+func structuredWireMessages(messages []ChatMessage) []structuredWireChatMessage {
+	out := make([]structuredWireChatMessage, 0, len(messages))
+	for _, message := range messages {
+		out = append(out, structuredWireChatMessage{Role: backendRole(message.Role), Content: message.Content})
 	}
 	return out
 }

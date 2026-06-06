@@ -3,6 +3,7 @@ package backends
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -21,6 +22,24 @@ func TestMessageContentUnmarshalStringAndParts(t *testing.T) {
 	}
 	if got := parts.String(); got != "first\nsecond" {
 		t.Fatalf("part content = %q", got)
+	}
+}
+
+func TestMessageContentPreservesImageParts(t *testing.T) {
+	var content MessageContent
+	raw := `[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}},{"type":"text","text":"look"}]`
+	if err := json.Unmarshal([]byte(raw), &content); err != nil {
+		t.Fatal(err)
+	}
+	if !content.HasImages() || content.String() != "look" {
+		t.Fatalf("unexpected content: %#v", content.Parts())
+	}
+	encoded, err := json.Marshal(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), "image_url") {
+		t.Fatalf("image part was lost: %s", encoded)
 	}
 }
 

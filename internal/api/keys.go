@@ -14,7 +14,24 @@ const maxKeyLabelRunes = 80
 
 // ListKeys handles GET /v1/keys.
 func (s *Server) ListKeys(w http.ResponseWriter, r *http.Request) {
-	keys, err := s.DB.ListAPIKeys(r.Context())
+	var keys []db.APIKeyView
+	var err error
+	if (auth.UserRoleFromContext(r.Context()) == "" && auth.KeyRoleFromContext(r.Context()) == "" && auth.KeyIDFromContext(r.Context()) == "") ||
+		auth.UserRoleFromContext(r.Context()) == "admin" || auth.KeyRoleFromContext(r.Context()) == "admin" {
+		keys, err = s.DB.ListAPIKeys(r.Context())
+	} else if userID := auth.UserIDFromContext(r.Context()); userID != "" {
+		keys, err = s.DB.ListAPIKeysByOwner(r.Context(), userID)
+	} else {
+		all, queryErr := s.DB.ListAPIKeys(r.Context())
+		err = queryErr
+		keyID := auth.KeyIDFromContext(r.Context())
+		for _, key := range all {
+			if key.ID == keyID {
+				keys = append(keys, key)
+				break
+			}
+		}
+	}
 	if err != nil {
 		writePrivateError(w, r, http.StatusInternalServerError, "key query failed", "KEY_QUERY_FAILED", err)
 		return
@@ -59,11 +76,25 @@ func (s *Server) CreateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
+	role := strings.TrimSpace(req.KeyRole)
+	if role == "" {
+		role = "inference"
+	}
+	if role != "inference" && role != "operator" && role != "admin" {
+		writeError(w, http.StatusBadRequest, "key_role must be inference, operator, or admin", "INVALID_KEY_ROLE")
+		return
+	}
+	if role != "inference" && auth.UserRoleFromContext(r.Context()) != "admin" && auth.KeyRoleFromContext(r.Context()) != "admin" {
+		writeError(w, http.StatusForbidden, "admin role required to create privileged keys", "FORBIDDEN")
+		return
+	}
 	if err := s.DB.CreateAPIKey(r.Context(), db.NewAPIKey{
 		ID:        id,
 		Label:     label,
 		Salt:      salt,
 		Hash:      auth.HashKey(raw, salt),
+		KeyRole:   role,
+		OwnerID:   auth.UserIDFromContext(r.Context()),
 		CreatedAt: now,
 	}); err != nil {
 		writePrivateError(w, r, http.StatusInternalServerError, "key create failed", "KEY_CREATE_FAILED", err)
@@ -86,6 +117,10 @@ func (s *Server) CreateKey(w http.ResponseWriter, r *http.Request) {
 // UpdateKeyModels handles PATCH /v1/keys/{id}/models.
 func (s *Server) UpdateKeyModels(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if !s.canManageKey(r, id) {
+		writeError(w, http.StatusNotFound, "key not found", "KEY_NOT_FOUND")
+		return
+	}
 	var req updateKeyModelsRequest
 	if err := decodeJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON request body", "INVALID_JSON")
@@ -117,6 +152,10 @@ func (s *Server) UpdateKeyModels(w http.ResponseWriter, r *http.Request) {
 // DeleteKey handles DELETE /v1/keys/{id}.
 func (s *Server) DeleteKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if !s.canManageKey(r, id) {
+		writeError(w, http.StatusNotFound, "key not found", "KEY_NOT_FOUND")
+		return
+	}
 	ok, lastActive, err := s.DB.RevokeAPIKeyIfNotLast(r.Context(), id, time.Now().UTC())
 	if err != nil {
 		writePrivateError(w, r, http.StatusInternalServerError, "key revoke failed", "KEY_REVOKE_FAILED", err)
@@ -211,6 +250,32 @@ func (s *Server) validModelAllowlist(models []string) ([]string, error) {
 
 func errUnknownACLModel(model string) error {
 	return keyValidationError("model " + model + " is not registered")
+}
+
+func (s *Server) canManageKey(r *http.Request, id string) bool {
+	if auth.UserRoleFromContext(r.Context()) == "" && auth.KeyRoleFromContext(r.Context()) == "" && auth.KeyIDFromContext(r.Context()) == "" {
+		return true
+	}
+	if auth.UserRoleFromContext(r.Context()) == "admin" || auth.KeyRoleFromContext(r.Context()) == "admin" {
+		return true
+	}
+	if auth.KeyIDFromContext(r.Context()) == id {
+		return true
+	}
+	userID := auth.UserIDFromContext(r.Context())
+	if userID == "" {
+		return false
+	}
+	keys, err := s.DB.ListAPIKeysByOwner(r.Context(), userID)
+	if err != nil {
+		return false
+	}
+	for _, key := range keys {
+		if key.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 type keyValidationError string

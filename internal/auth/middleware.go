@@ -20,14 +20,17 @@ import (
 type contextKey string
 
 const (
-	keyIDContextKey   contextKey = "aegis.key_id"
-	userIDContextKey  contextKey = "aegis.user_id"
+	keyIDContextKey    contextKey = "aegis.key_id"
+	userIDContextKey   contextKey = "aegis.user_id"
 	userRoleContextKey contextKey = "aegis.user_role"
-	keyRoleContextKey contextKey = "aegis.key_role"
-	keyMetaContextKey contextKey = "aegis.key_meta"
+	keyRoleContextKey  contextKey = "aegis.key_role"
+	keyMetaContextKey  contextKey = "aegis.key_meta"
+	keyOwnerContextKey contextKey = "aegis.key_owner"
 )
 
 const (
+	// Keep revocation lag small while avoiding a full password-hash scan on
+	// every request.
 	tokenCacheTTL      = 3 * time.Second
 	tokenCacheMaxItems = 4096
 	authFailureRPM     = 30
@@ -45,13 +48,14 @@ type Store interface {
 
 // Middleware authenticates Bearer API keys and session cookies.
 type Middleware struct {
-	store      Store
-	limiter    *RateLimiter
-	rpmFunc    func() int
-	nowFunc    func() time.Time
-	cacheMu    sync.RWMutex
-	tokenCache map[string]cachedToken
-	stopCache  chan struct{}
+	store          Store
+	limiter        *RateLimiter
+	rpmFunc        func() int
+	nowFunc        func() time.Time
+	cacheMu        sync.RWMutex
+	tokenCache     map[string]cachedToken
+	stopCache      chan struct{}
+	trustedProxies func() []string
 }
 
 type cachedToken struct {
@@ -61,7 +65,7 @@ type cachedToken struct {
 }
 
 // NewMiddleware creates chi-compatible auth middleware.
-func NewMiddleware(store Store, limiter *RateLimiter, rpmFunc func() int) *Middleware {
+func NewMiddleware(store Store, limiter *RateLimiter, rpmFunc func() int, trustedProxies ...func() []string) *Middleware {
 	middleware := &Middleware{
 		store:      store,
 		limiter:    limiter,
@@ -69,6 +73,9 @@ func NewMiddleware(store Store, limiter *RateLimiter, rpmFunc func() int) *Middl
 		nowFunc:    func() time.Time { return time.Now().UTC() },
 		tokenCache: map[string]cachedToken{},
 		stopCache:  make(chan struct{}),
+	}
+	if len(trustedProxies) > 0 {
+		middleware.trustedProxies = trustedProxies[0]
 	}
 	go middleware.pruneTokenCacheLoop(time.Minute)
 	return middleware
@@ -86,7 +93,7 @@ func (m *Middleware) Stop() {
 // Handler wraps an HTTP handler with Bearer auth and rate limiting.
 func (m *Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := clientIP(r)
+		ip := m.clientIP(r)
 		now := m.nowFunc()
 
 		bearerTok := bearerToken(r.Header.Get("Authorization"))
@@ -144,6 +151,7 @@ func (m *Middleware) handleBearerAuth(w http.ResponseWriter, r *http.Request, to
 
 	ctx := context.WithValue(r.Context(), keyIDContextKey, keyID)
 	ctx = context.WithValue(ctx, keyRoleContextKey, meta.KeyRole)
+	ctx = context.WithValue(ctx, keyOwnerContextKey, meta.OwnerID)
 	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
@@ -272,6 +280,14 @@ func KeyMetaFromContext(ctx context.Context) (db.APIKeySecret, bool) {
 	return meta, ok
 }
 
+// KeyOwnerIDFromContext returns the API key owner, when assigned.
+func KeyOwnerIDFromContext(ctx context.Context) string {
+	if value, ok := ctx.Value(keyOwnerContextKey).(string); ok {
+		return value
+	}
+	return ""
+}
+
 func (m *Middleware) unauthorized(w http.ResponseWriter, r *http.Request, ip string) {
 	now := m.nowFunc()
 	if ok, retryAfter := m.limiter.Allow("auth-failure:"+ip, authFailureLimit(m.rpmFunc()), now); !ok {
@@ -304,6 +320,34 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func (m *Middleware) clientIP(r *http.Request) string {
+	direct := clientIP(r)
+	if m.trustedProxies == nil || !ipInCIDRs(direct, m.trustedProxies()) {
+		return direct
+	}
+	if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); net.ParseIP(forwarded) != nil {
+		return forwarded
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); net.ParseIP(realIP) != nil {
+		return realIP
+	}
+	return direct
+}
+
+func ipInCIDRs(value string, cidrs []string) bool {
+	ip := net.ParseIP(value)
+	if ip == nil {
+		return false
+	}
+	for _, value := range cidrs {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(value))
+		if err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeAuthError(w http.ResponseWriter, status int, message, code string) {

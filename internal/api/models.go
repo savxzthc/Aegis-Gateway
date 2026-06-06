@@ -50,9 +50,8 @@ func (s *Server) ModelCatalog(w http.ResponseWriter, r *http.Request) {
 	category := normalizeCatalogCategory(r.URL.Query().Get("category"))
 	limit := parseCatalogLimit(r.URL.Query().Get("limit"))
 	offset := parseCatalogOffset(r.URL.Query().Get("offset"))
-	installedModels := map[string]bool{}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	installedModels = s.Lifecycle.OllamaModels(ctx)
+	installedModels := s.Lifecycle.OllamaModels(ctx)
 	cancel()
 	data := make([]catalogModelObject, 0, len(downloadCatalog))
 	for _, item := range downloadCatalog {
@@ -144,6 +143,25 @@ func (s *Server) LocalModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, localModelsResponse{Reachable: details != nil, Data: data})
 }
 
+// DiscoverModels handles GET /v1/models/discover without exposing Ollama's
+// extended model metadata or configured backend URLs.
+func (s *Server) DiscoverModels(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	details := s.Lifecycle.OllamaModelDetails(ctx)
+	cfg := s.Config.Get()
+	data := make([]discoveredModel, 0, len(details))
+	for _, item := range details {
+		sizeGB := bytesToGB(item.SizeBytes)
+		_, registered := cfg.Models.Registry[item.Name]
+		data = append(data, discoveredModel{
+			ID: item.Name, SizeGB: sizeGB, VRAMGBEstimate: estimateVRAMGB(sizeGB), AlreadyRegistered: registered,
+		})
+	}
+	sort.Slice(data, func(i, j int) bool { return data[i].ID < data[j].ID })
+	writeJSON(w, http.StatusOK, map[string]interface{}{"reachable": details != nil, "data": data})
+}
+
 // RegisterInstalledModel handles POST /v1/models/register. It registers a model
 // that is already installed locally in Ollama so it becomes selectable, without
 // triggering a download.
@@ -173,9 +191,17 @@ func (s *Server) RegisterInstalledModel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	sizeGB := bytesToGB(match.SizeBytes)
+	vramGB := req.VRAMGB
+	if vramGB <= 0 {
+		vramGB = estimateVRAMGB(sizeGB)
+	}
+	backend := strings.TrimSpace(req.Backend)
+	if backend == "" {
+		backend = "ollama"
+	}
 	if _, err := s.Config.RegisterModel(name, config.ModelConfig{
-		VRAMGB:      estimateVRAMGB(sizeGB),
-		Backend:     "ollama",
+		VRAMGB:      vramGB,
+		Backend:     backend,
 		Description: "Detected in local Ollama install",
 	}); err != nil {
 		writePrivateError(w, r, http.StatusInternalServerError, "model registration failed", "MODEL_REGISTER_FAILED", err)
@@ -294,7 +320,16 @@ type pullModelRequest struct {
 }
 
 type registerModelRequest struct {
-	Model string `json:"model"`
+	Model   string  `json:"model"`
+	VRAMGB  float64 `json:"vram_gb"`
+	Backend string  `json:"backend"`
+}
+
+type discoveredModel struct {
+	ID                string  `json:"id"`
+	SizeGB            float64 `json:"size_gb"`
+	VRAMGBEstimate    float64 `json:"vram_gb_estimate"`
+	AlreadyRegistered bool    `json:"already_registered"`
 }
 
 type registerModelResponse struct {

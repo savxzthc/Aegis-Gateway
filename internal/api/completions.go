@@ -17,11 +17,15 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/savxzthc/aegis-gateway/internal/auth"
 	"github.com/savxzthc/aegis-gateway/internal/backends"
+	"github.com/savxzthc/aegis-gateway/internal/config"
 	"github.com/savxzthc/aegis-gateway/internal/db"
 	modelrouter "github.com/savxzthc/aegis-gateway/internal/router"
+	searchpkg "github.com/savxzthc/aegis-gateway/internal/search"
 )
 
 const maxRequestBodyBytes int64 = 4 << 20
+const maxChatMessages = 1000
+const maxMessageContentBytes = 256 << 10
 
 // ChatCompletions handles POST /v1/chat/completions.
 func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -38,8 +42,9 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	fallback := false
 	promptTokens := 0
 	completionTokens := 0
+	tokensPerSecond := 0.0
 	defer func() {
-		s.logRequest(r.Context(), started, keyID, requested, used, fallback, backendType, status, promptTokens, completionTokens)
+		s.logRequest(r.Context(), started, keyID, requested, used, fallback, backendType, status, promptTokens, completionTokens, tokensPerSecond)
 	}()
 
 	var req backends.ChatRequest
@@ -49,20 +54,35 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requested = req.Model
+	if keyID == "" {
+		keyID = requestOwnerID(r)
+	}
 	promptTokens = estimateMessages(req.Messages)
 	if err := validateChatRequest(&req); err != nil {
 		status = http.StatusBadRequest
 		writeError(w, status, err.Error(), "INVALID_REQUEST")
 		return
 	}
-	if ok, err := s.DB.KeyAllowsModel(r.Context(), keyID, req.Model); err != nil {
-		status = http.StatusInternalServerError
-		writePrivateError(w, r, status, "model ACL check failed", "MODEL_ACL_CHECK_FAILED", err)
+	if keyID != "" && auth.KeyIDFromContext(r.Context()) != "" {
+		if ok, err := s.DB.KeyAllowsModel(r.Context(), keyID, req.Model); err != nil {
+			status = http.StatusInternalServerError
+			writePrivateError(w, r, status, "model ACL check failed", "MODEL_ACL_CHECK_FAILED", err)
+			return
+		} else if !ok {
+			status = http.StatusForbidden
+			writeError(w, status, "API key is not allowed to use this model", "MODEL_NOT_ALLOWED")
+			return
+		}
+	}
+	conversationID, err := s.prepareConversation(r, req.ConversationID, req.Persist, req.Model, lastUserText(req.Messages))
+	if err != nil {
+		status = http.StatusNotFound
+		writeError(w, status, "conversation not found", "CONVERSATION_NOT_FOUND")
 		return
-	} else if !ok {
-		status = http.StatusForbidden
-		writeError(w, status, "API key is not allowed to use this model", "MODEL_NOT_ALLOWED")
-		return
+	}
+	if conversationID != "" {
+		req.ConversationID = conversationID
+		w.Header().Set("X-Aegis-Conversation-ID", conversationID)
 	}
 
 	selected, didFallback, err := s.VRAMRouter.SelectModel(r.Context(), req.Model)
@@ -71,7 +91,7 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err.Error(), routeErrorCode(err))
 		return
 	}
-	if selected != req.Model {
+	if selected != req.Model && auth.KeyIDFromContext(r.Context()) != "" {
 		if ok, err := s.DB.KeyAllowsModel(r.Context(), keyID, selected); err != nil {
 			status = http.StatusInternalServerError
 			writePrivateError(w, r, status, "model ACL check failed", "MODEL_ACL_CHECK_FAILED", err)
@@ -86,6 +106,23 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	fallback = didFallback
 	req.Model = selected
 	req.Messages = s.withConfiguredSystemPrompt(req.Messages, selected)
+	var searchUsed bool
+	req.Messages, searchUsed = s.withSearchResults(r, req.Messages, req.Search)
+	if searchUsed {
+		w.Header().Set("X-Aegis-Search-Used", "true")
+	}
+	resolvedMessages, hasImages, err := s.resolveUploadImages(r, req.Messages)
+	if err != nil {
+		status = http.StatusBadRequest
+		writeError(w, status, "referenced upload could not be loaded", "UPLOAD_NOT_FOUND")
+		return
+	}
+	if hasImages && !config.SupportsVision(s.Config.Get(), selected) {
+		status = http.StatusBadRequest
+		writeError(w, status, "selected model is not configured for vision", "MODEL_NO_VISION")
+		return
+	}
+	req.Messages = resolvedMessages
 	promptTokens = estimateMessages(req.Messages)
 	w.Header().Set("X-Aegis-Routed-Model", selected)
 	w.Header().Set("X-Aegis-Fallback", fmt.Sprintf("%t", didFallback))
@@ -110,10 +147,15 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if req.Stream {
 		result := s.streamChat(w, r, backend, &req, selected)
 		completionTokens = result.Tokens
+		tokensPerSecond = result.TokensPerSecond
 		status = result.Status
+		if status == http.StatusOK && conversationID != "" {
+			s.persistConversationPair(r, conversationID, lastUserText(req.Messages), result.Content, selected, tokensPerSecond)
+		}
 		return
 	}
 
+	generationStarted := time.Now()
 	resp, err := backend.Chat(r.Context(), &req, false)
 	if err != nil {
 		status = http.StatusBadGateway
@@ -124,6 +166,11 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	completionTokens = resp.Usage.CompletionTokens
 	if completionTokens == 0 {
 		completionTokens = estimateText(resp.Content)
+	}
+	tokensPerSecond = calculateTPS(completionTokens, time.Since(generationStarted))
+	w.Header().Set("X-Aegis-TPS", fmt.Sprintf("%.1f", tokensPerSecond))
+	if conversationID != "" {
+		s.persistConversationPair(r, conversationID, lastUserText(req.Messages), resp.Content, selected, tokensPerSecond)
 	}
 	writeJSON(w, status, newChatCompletionResponse(selected, resp.Content, promptTokens, completionTokens, completionFinishReason(resp.FinishReason, req.MaxTokens, completionTokens)))
 }
@@ -143,8 +190,9 @@ func (s *Server) Completions(w http.ResponseWriter, r *http.Request) {
 	fallback := false
 	promptTokens := 0
 	completionTokens := 0
+	tokensPerSecond := 0.0
 	defer func() {
-		s.logRequest(r.Context(), started, keyID, requested, used, fallback, backendType, status, promptTokens, completionTokens)
+		s.logRequest(r.Context(), started, keyID, requested, used, fallback, backendType, status, promptTokens, completionTokens, tokensPerSecond)
 	}()
 
 	var req backends.CompletionRequest
@@ -154,6 +202,9 @@ func (s *Server) Completions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requested = req.Model
+	if keyID == "" {
+		keyID = requestOwnerID(r)
+	}
 	prompt := req.Prompt.String()
 	promptTokens = estimateText(prompt)
 	if req.Model == "" || req.Prompt.Empty() {
@@ -161,19 +212,30 @@ func (s *Server) Completions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, "model and prompt are required", "INVALID_REQUEST")
 		return
 	}
-	if ok, err := s.DB.KeyAllowsModel(r.Context(), keyID, req.Model); err != nil {
-		status = http.StatusInternalServerError
-		writePrivateError(w, r, status, "model ACL check failed", "MODEL_ACL_CHECK_FAILED", err)
-		return
-	} else if !ok {
-		status = http.StatusForbidden
-		writeError(w, status, "API key is not allowed to use this model", "MODEL_NOT_ALLOWED")
-		return
+	if auth.KeyIDFromContext(r.Context()) != "" {
+		if ok, err := s.DB.KeyAllowsModel(r.Context(), keyID, req.Model); err != nil {
+			status = http.StatusInternalServerError
+			writePrivateError(w, r, status, "model ACL check failed", "MODEL_ACL_CHECK_FAILED", err)
+			return
+		} else if !ok {
+			status = http.StatusForbidden
+			writeError(w, status, "API key is not allowed to use this model", "MODEL_NOT_ALLOWED")
+			return
+		}
 	}
 	if err := validateSampling(req.N, req.MaxTokens, req.Temperature, req.TopP, req.PresencePenalty, req.FrequencyPenalty); err != nil {
 		status = http.StatusBadRequest
 		writeError(w, status, err.Error(), "INVALID_REQUEST")
 		return
+	}
+	conversationID, err := s.prepareConversation(r, req.ConversationID, req.Persist, req.Model, prompt)
+	if err != nil {
+		status = http.StatusNotFound
+		writeError(w, status, "conversation not found", "CONVERSATION_NOT_FOUND")
+		return
+	}
+	if conversationID != "" {
+		w.Header().Set("X-Aegis-Conversation-ID", conversationID)
 	}
 
 	selected, didFallback, err := s.VRAMRouter.SelectModel(r.Context(), req.Model)
@@ -182,7 +244,7 @@ func (s *Server) Completions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err.Error(), routeErrorCode(err))
 		return
 	}
-	if selected != req.Model {
+	if selected != req.Model && auth.KeyIDFromContext(r.Context()) != "" {
 		if ok, err := s.DB.KeyAllowsModel(r.Context(), keyID, selected); err != nil {
 			status = http.StatusInternalServerError
 			writePrivateError(w, r, status, "model ACL check failed", "MODEL_ACL_CHECK_FAILED", err)
@@ -226,13 +288,24 @@ func (s *Server) Completions(w http.ResponseWriter, r *http.Request) {
 		Stop:        req.Stop,
 		Seed:        req.Seed,
 	}
+	chatReq.Messages = s.withConfiguredSystemPrompt(chatReq.Messages, selected)
+	var searchUsed bool
+	chatReq.Messages, searchUsed = s.withSearchResults(r, chatReq.Messages, req.Search)
+	if searchUsed {
+		w.Header().Set("X-Aegis-Search-Used", "true")
+	}
 	if req.Stream {
 		result := s.streamCompletion(w, r, backend, chatReq, selected)
 		completionTokens = result.Tokens
+		tokensPerSecond = result.TokensPerSecond
 		status = result.Status
+		if status == http.StatusOK && conversationID != "" {
+			s.persistConversationPair(r, conversationID, prompt, result.Content, selected, tokensPerSecond)
+		}
 		return
 	}
 
+	generationStarted := time.Now()
 	resp, err := backend.Chat(r.Context(), chatReq, false)
 	if err != nil {
 		status = http.StatusBadGateway
@@ -244,12 +317,19 @@ func (s *Server) Completions(w http.ResponseWriter, r *http.Request) {
 	if completionTokens == 0 {
 		completionTokens = estimateText(resp.Content)
 	}
+	tokensPerSecond = calculateTPS(completionTokens, time.Since(generationStarted))
+	w.Header().Set("X-Aegis-TPS", fmt.Sprintf("%.1f", tokensPerSecond))
+	if conversationID != "" {
+		s.persistConversationPair(r, conversationID, prompt, resp.Content, selected, tokensPerSecond)
+	}
 	writeJSON(w, status, newCompletionResponse(selected, resp.Content, promptTokens, completionTokens, completionFinishReason(resp.FinishReason, req.MaxTokens, completionTokens)))
 }
 
 type streamResult struct {
-	Tokens int
-	Status int
+	Tokens          int
+	Status          int
+	Content         string
+	TokensPerSecond float64
 }
 
 func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend backends.Backend, req *backends.ChatRequest, model string) streamResult {
@@ -259,6 +339,7 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend back
 		return streamResult{Status: http.StatusInternalServerError}
 	}
 	prepareSSE(w)
+	w.Header().Add("Trailer", "X-Aegis-TPS")
 	ch := make(chan backends.StreamChunk)
 	errCh := make(chan error, 1)
 	streamCtx, cancelStream := s.streamContext(r.Context())
@@ -283,6 +364,8 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend back
 		}},
 	})
 	finishReason := ""
+	var content strings.Builder
+	var firstTokenAt time.Time
 	for chunk := range ch {
 		if chunk.Usage.CompletionTokens > 0 {
 			completionTokens = chunk.Usage.CompletionTokens
@@ -293,6 +376,10 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend back
 		if chunk.Content == "" {
 			continue
 		}
+		if firstTokenAt.IsZero() {
+			firstTokenAt = time.Now()
+		}
+		content.WriteString(chunk.Content)
 		if completionTokens == 0 || chunk.Usage.CompletionTokens == 0 {
 			completionTokens += estimateText(chunk.Content)
 		}
@@ -311,10 +398,10 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend back
 	if err := <-errCh; err != nil && !isContextDone(streamCtx) {
 		s.logPrivateFailure(r, "BACKEND_STREAM_ERROR", model, "")
 		writeSSE(w, flusher, errorResponse{Error: "backend stream failed", Code: "BACKEND_STREAM_ERROR"})
-		return streamResult{Tokens: completionTokens, Status: http.StatusBadGateway}
+		return streamResult{Tokens: completionTokens, Status: http.StatusBadGateway, Content: content.String()}
 	}
 	if isContextDone(streamCtx) {
-		return streamResult{Tokens: completionTokens, Status: 499}
+		return streamResult{Tokens: completionTokens, Status: 499, Content: content.String()}
 	}
 	finish := completionFinishReason(finishReason, req.MaxTokens, completionTokens)
 	var usage *backends.Usage
@@ -331,9 +418,12 @@ func (s *Server) streamChat(w http.ResponseWriter, r *http.Request, backend back
 		Choices:           []chatStreamChoice{{Index: 0, Delta: chatDelta{}, FinishReason: &finish}},
 		Usage:             usage,
 	})
+	tps := calculateTPS(completionTokens, time.Since(firstTokenAt))
+	writeSSE(w, flusher, map[string]interface{}{"type": "meta", "tokens_per_second": tps})
+	w.Header().Set("X-Aegis-TPS", fmt.Sprintf("%.1f", tps))
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
-	return streamResult{Tokens: completionTokens, Status: http.StatusOK}
+	return streamResult{Tokens: completionTokens, Status: http.StatusOK, Content: content.String(), TokensPerSecond: tps}
 }
 
 func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, backend backends.Backend, req *backends.ChatRequest, model string) streamResult {
@@ -343,6 +433,7 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, backen
 		return streamResult{Status: http.StatusInternalServerError}
 	}
 	prepareSSE(w)
+	w.Header().Add("Trailer", "X-Aegis-TPS")
 	ch := make(chan backends.StreamChunk)
 	errCh := make(chan error, 1)
 	streamCtx, cancelStream := s.streamContext(r.Context())
@@ -356,6 +447,8 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, backen
 	id := responseID("cmpl")
 	created := time.Now().Unix()
 	finishReason := ""
+	var firstTokenAt time.Time
+	var content strings.Builder
 	for chunk := range ch {
 		if chunk.Usage.CompletionTokens > 0 {
 			completionTokens = chunk.Usage.CompletionTokens
@@ -366,6 +459,10 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, backen
 		if chunk.Content == "" {
 			continue
 		}
+		if firstTokenAt.IsZero() {
+			firstTokenAt = time.Now()
+		}
+		content.WriteString(chunk.Content)
 		if completionTokens == 0 || chunk.Usage.CompletionTokens == 0 {
 			completionTokens += estimateText(chunk.Content)
 		}
@@ -394,9 +491,12 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, backen
 		SystemFingerprint: systemFingerprint,
 		Choices:           []completionChoice{{Text: "", Index: 0, FinishReason: &finish}},
 	})
+	tps := calculateTPS(completionTokens, time.Since(firstTokenAt))
+	writeSSE(w, flusher, map[string]interface{}{"type": "meta", "tokens_per_second": tps})
+	w.Header().Set("X-Aegis-TPS", fmt.Sprintf("%.1f", tps))
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
-	return streamResult{Tokens: completionTokens, Status: http.StatusOK}
+	return streamResult{Tokens: completionTokens, Status: http.StatusOK, Content: content.String(), TokensPerSecond: tps}
 }
 
 func prepareSSE(w http.ResponseWriter) {
@@ -426,7 +526,7 @@ func (s *Server) streamContext(parent context.Context) (context.Context, context
 	return ctx, cancel
 }
 
-func (s *Server) logRequest(ctx context.Context, started time.Time, keyID, requested, used string, fallback bool, backendType string, status int, promptTokens, completionTokens int) {
+func (s *Server) logRequest(ctx context.Context, started time.Time, keyID, requested, used string, fallback bool, backendType string, status int, promptTokens, completionTokens int, tokensPerSecond float64) {
 	if keyID == "" {
 		log.Printf("aegis: request log skipped because authenticated key id is missing")
 		return
@@ -447,6 +547,7 @@ func (s *Server) logRequest(ctx context.Context, started time.Time, keyID, reque
 		EstimatedPromptTokens:     promptTokens,
 		EstimatedCompletionTokens: completionTokens,
 		StatusCode:                status,
+		TokensPerSecond:           tokensPerSecond,
 	}); err != nil {
 		log.Printf("aegis: request log failed: %v", err)
 	}
@@ -529,6 +630,9 @@ func validateChatRequest(req *backends.ChatRequest) error {
 	if len(req.Messages) == 0 {
 		return fmt.Errorf("messages are required")
 	}
+	if len(req.Messages) > maxChatMessages {
+		return fmt.Errorf("messages must contain at most %d items", maxChatMessages)
+	}
 	for i, msg := range req.Messages {
 		switch msg.Role {
 		case "system", "developer", "user", "assistant", "tool":
@@ -537,6 +641,9 @@ func validateChatRequest(req *backends.ChatRequest) error {
 		}
 		if msg.Content.Empty() {
 			return fmt.Errorf("messages[%d].content is required", i)
+		}
+		if len(msg.Content.String()) > maxMessageContentBytes {
+			return fmt.Errorf("messages[%d].content exceeds %d bytes", i, maxMessageContentBytes)
 		}
 	}
 	return validateSampling(req.N, req.MaxTokens, req.Temperature, req.TopP, req.PresencePenalty, req.FrequencyPenalty)
@@ -565,15 +672,15 @@ func validateSampling(n *int, maxTokens *int, temperature, topP, presencePenalty
 }
 
 func estimateText(value string) int {
+	// This is a fast cross-backend approximation, not a model tokenizer.
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return 0
 	}
-	runes := []rune(value)
 	asciiBytes := 0
 	nonLatin := 0
 	symbols := 0
-	for _, r := range runes {
+	for _, r := range value {
 		switch {
 		case r <= unicode.MaxASCII:
 			asciiBytes++
@@ -594,6 +701,113 @@ func estimateText(value string) int {
 		return 1
 	}
 	return estimate
+}
+
+func calculateTPS(tokens int, elapsed time.Duration) float64 {
+	if tokens <= 0 || elapsed <= 0 || elapsed > 24*time.Hour {
+		return 0
+	}
+	return float64(tokens) / elapsed.Seconds()
+}
+
+func lastUserText(messages []backends.ChatMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content.String()
+		}
+	}
+	return ""
+}
+
+func (s *Server) prepareConversation(r *http.Request, requested string, persist bool, model, firstMessage string) (string, error) {
+	if requested != "" {
+		_, ok, err := s.DB.ConversationByID(r.Context(), requested, requestOwnerID(r))
+		if err != nil || !ok {
+			return "", fmt.Errorf("conversation unavailable")
+		}
+		return requested, nil
+	}
+	if !persist {
+		return "", nil
+	}
+	title := strings.TrimSpace(firstMessage)
+	if len([]rune(title)) > 80 {
+		title = string([]rune(title)[:80])
+	}
+	item, err := s.newConversation(r, title, model)
+	if err != nil {
+		return "", err
+	}
+	return item.ID, nil
+}
+
+func (s *Server) persistConversationPair(r *http.Request, conversationID, userText, assistantText, model string, tps float64) {
+	now := time.Now().UTC()
+	userID, err := auth.GenerateID("msg")
+	if err != nil {
+		log.Printf("aegis: conversation message id failed: %v", err)
+		return
+	}
+	assistantID, err := auth.GenerateID("msg")
+	if err != nil {
+		log.Printf("aegis: conversation message id failed: %v", err)
+		return
+	}
+	ok, err := s.DB.AppendConversationMessages(r.Context(), conversationID, requestOwnerID(r), []db.ChatMessage{
+		{ID: userID, Role: "user", Content: userText, CreatedAt: now},
+		{ID: assistantID, Role: "assistant", Content: assistantText, ModelUsed: model, TokensPerSecond: tps, CreatedAt: now.Add(time.Nanosecond)},
+	}, now)
+	if err != nil || !ok {
+		log.Printf("aegis: conversation append failed conversation=%s error=%v", conversationID, err)
+	}
+}
+
+func (s *Server) withSearchResults(r *http.Request, messages []backends.ChatMessage, requested *bool) ([]backends.ChatMessage, bool) {
+	cfg := s.Config.Get()
+	enabled := cfg.Search.Enabled
+	if requested != nil {
+		enabled = *requested
+	}
+	if !enabled || containsSearchResults(messages) {
+		return messages, false
+	}
+	query := lastUserText(messages)
+	if strings.TrimSpace(query) == "" {
+		return messages, false
+	}
+	client, err := searchpkg.NewClient(cfg.Search)
+	if err != nil {
+		return messages, false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Search.TimeoutSeconds)*time.Second)
+	defer cancel()
+	results, err := client.Search(ctx, query)
+	if err != nil {
+		log.Printf("aegis: search grounding unavailable provider=%s error=%v", cfg.Search.Provider, err)
+		return messages, false
+	}
+	formatted := searchpkg.FormatResults(results)
+	if formatted == "" {
+		return messages, false
+	}
+	index := 0
+	for index < len(messages) && (messages[index].Role == "system" || messages[index].Role == "developer") {
+		index++
+	}
+	next := make([]backends.ChatMessage, 0, len(messages)+1)
+	next = append(next, messages[:index]...)
+	next = append(next, backends.ChatMessage{Role: "system", Content: backends.NewMessageContent(formatted)})
+	next = append(next, messages[index:]...)
+	return next, true
+}
+
+func containsSearchResults(messages []backends.ChatMessage) bool {
+	for _, message := range messages {
+		if strings.Contains(message.Content.String(), "[Search Results]") {
+			return true
+		}
+	}
+	return false
 }
 
 var tokenEstimateRE = regexp.MustCompile(`[A-Za-z0-9_]+|[^\sA-Za-z0-9_]`)

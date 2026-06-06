@@ -104,3 +104,11 @@ func TestValidateRejectsCloudDefaultBackend(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateRejectsUnknownModelBackend(t *testing.T) {
+	cfg := Defaults()
+	cfg.Models.Registry["bad"] = ModelConfig{Backend: "typo-backend"}
+	if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("expected descriptive unknown backend error, got %v", err)
+	}
+}

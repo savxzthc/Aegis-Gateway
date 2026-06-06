@@ -40,17 +40,17 @@ type NewAPIKey struct {
 
 // APIKeyView is the dashboard-safe representation of an API key.
 type APIKeyView struct {
-	ID             string     `json:"id"`
-	Label          string     `json:"label"`
-	KeyRole        string     `json:"key_role"`
-	OwnerID        *string    `json:"owner_id,omitempty"`
-	RateLimitRPM   int        `json:"rate_limit_rpm"`
-	MaxPromptTokens int       `json:"max_prompt_tokens"`
-	AllowedIPs     []string   `json:"allowed_ips"`
-	CreatedAt      time.Time  `json:"created_at"`
-	LastUsed       *time.Time `json:"last_used"`
-	RequestsTotal  int64      `json:"requests_total"`
-	AllowedModels  []string   `json:"allowed_models"`
+	ID              string     `json:"id"`
+	Label           string     `json:"label"`
+	KeyRole         string     `json:"key_role"`
+	OwnerID         *string    `json:"owner_id,omitempty"`
+	RateLimitRPM    int        `json:"rate_limit_rpm"`
+	MaxPromptTokens int        `json:"max_prompt_tokens"`
+	AllowedIPs      []string   `json:"allowed_ips"`
+	CreatedAt       time.Time  `json:"created_at"`
+	LastUsed        *time.Time `json:"last_used"`
+	RequestsTotal   int64      `json:"requests_total"`
+	AllowedModels   []string   `json:"allowed_models"`
 }
 
 // RequestLog contains privacy-preserving request metadata.
@@ -66,6 +66,7 @@ type RequestLog struct {
 	EstimatedPromptTokens     int       `json:"estimated_prompt_tokens"`
 	EstimatedCompletionTokens int       `json:"estimated_completion_tokens"`
 	StatusCode                int       `json:"status_code"`
+	TokensPerSecond           float64   `json:"tokens_per_second"`
 }
 
 // TopModelStat contains an aggregate request count by model.
@@ -549,9 +550,10 @@ func (s *Store) InsertRequestLog(ctx context.Context, log RequestLog) error {
 			timestamp, key_id, model_requested, model_used, fallback_triggered,
 			backend_type, latency_ms, estimated_prompt_tokens,
 			estimated_completion_tokens, status_code
+			, tokens_per_second
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, formatTime(log.Timestamp), log.KeyID, log.ModelRequested, log.ModelUsed, boolInt(log.FallbackTriggered), log.BackendType, log.LatencyMS, log.EstimatedPromptTokens, log.EstimatedCompletionTokens, log.StatusCode)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, formatTime(log.Timestamp), log.KeyID, log.ModelRequested, log.ModelUsed, boolInt(log.FallbackTriggered), log.BackendType, log.LatencyMS, log.EstimatedPromptTokens, log.EstimatedCompletionTokens, log.StatusCode, log.TokensPerSecond)
 	if err != nil {
 		return err
 	}
@@ -589,6 +591,7 @@ func (s *Store) ListRequestLogs(ctx context.Context, limit, offset int) ([]Reque
 	rows, err := s.conn.QueryContext(ctx, `
 		SELECT id, timestamp, key_id, model_requested, model_used, fallback_triggered,
 			backend_type, latency_ms, estimated_prompt_tokens, estimated_completion_tokens, status_code,
+			tokens_per_second,
 			COUNT(*) OVER () AS total
 		FROM request_logs
 		ORDER BY timestamp DESC, id DESC
@@ -605,7 +608,7 @@ func (s *Store) ListRequestLogs(ctx context.Context, limit, offset int) ([]Reque
 		var log RequestLog
 		var ts string
 		var fallback int
-		if err := rows.Scan(&log.ID, &ts, &log.KeyID, &log.ModelRequested, &log.ModelUsed, &fallback, &log.BackendType, &log.LatencyMS, &log.EstimatedPromptTokens, &log.EstimatedCompletionTokens, &log.StatusCode, &total); err != nil {
+		if err := rows.Scan(&log.ID, &ts, &log.KeyID, &log.ModelRequested, &log.ModelUsed, &fallback, &log.BackendType, &log.LatencyMS, &log.EstimatedPromptTokens, &log.EstimatedCompletionTokens, &log.StatusCode, &log.TokensPerSecond, &total); err != nil {
 			return nil, 0, err
 		}
 		parsed, err := parseTime(ts)

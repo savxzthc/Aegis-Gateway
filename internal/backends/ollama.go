@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
+
+const aegisUserAgent = "Aegis-Gateway/dev"
 
 // OllamaBackend translates Aegis requests to the Ollama HTTP API.
 type OllamaBackend struct {
@@ -47,7 +50,7 @@ func (b *OllamaBackend) Ping(ctx context.Context) error {
 func (b *OllamaBackend) Chat(ctx context.Context, req *ChatRequest, stream bool) (*ChatResponse, error) {
 	body := ollamaChatRequest{
 		Model:    req.Model,
-		Messages: wireMessages(req.Messages),
+		Messages: ollamaMessages(req.Messages),
 		Stream:   false,
 		Options:  ollamaOptions{Temperature: req.Temperature, TopP: req.TopP, NumPredict: req.MaxTokens, Stop: req.Stop.Values(), Seed: req.Seed},
 	}
@@ -60,6 +63,7 @@ func (b *OllamaBackend) Chat(ctx context.Context, req *ChatRequest, stream bool)
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("User-Agent", aegisUserAgent)
 	res, err := b.client.Do(httpReq)
 	if err != nil {
 		return nil, err
@@ -88,7 +92,7 @@ func (b *OllamaBackend) Chat(ctx context.Context, req *ChatRequest, stream bool)
 func (b *OllamaBackend) StreamChat(ctx context.Context, req *ChatRequest, ch chan<- StreamChunk) error {
 	body := ollamaChatRequest{
 		Model:    req.Model,
-		Messages: wireMessages(req.Messages),
+		Messages: ollamaMessages(req.Messages),
 		Stream:   true,
 		Options:  ollamaOptions{Temperature: req.Temperature, TopP: req.TopP, NumPredict: req.MaxTokens, Stop: req.Stop.Values(), Seed: req.Seed},
 	}
@@ -101,6 +105,7 @@ func (b *OllamaBackend) StreamChat(ctx context.Context, req *ChatRequest, ch cha
 		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("User-Agent", aegisUserAgent)
 	res, err := b.client.Do(httpReq)
 	if err != nil {
 		return err
@@ -111,7 +116,8 @@ func (b *OllamaBackend) StreamChat(ctx context.Context, req *ChatRequest, ch cha
 	}
 
 	scanner := bufio.NewScanner(res.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// Ollama emits one JSON object per line; allow large multimodal responses.
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -155,10 +161,33 @@ func (b *OllamaBackend) StreamChat(ctx context.Context, req *ChatRequest, ch cha
 }
 
 type ollamaChatRequest struct {
-	Model    string            `json:"model"`
-	Messages []wireChatMessage `json:"messages"`
-	Stream   bool              `json:"stream"`
-	Options  ollamaOptions     `json:"options,omitempty"`
+	Model    string          `json:"model"`
+	Messages []ollamaMessage `json:"messages"`
+	Stream   bool            `json:"stream"`
+	Options  ollamaOptions   `json:"options,omitempty"`
+}
+
+type ollamaMessage struct {
+	Role    string   `json:"role"`
+	Content string   `json:"content"`
+	Images  []string `json:"images,omitempty"`
+}
+
+func ollamaMessages(messages []ChatMessage) []ollamaMessage {
+	out := make([]ollamaMessage, 0, len(messages))
+	for _, message := range messages {
+		item := ollamaMessage{Role: backendRole(message.Role), Content: message.Content.String()}
+		for _, part := range message.Content.Parts() {
+			if part.Type != "image_url" || part.ImageURL == nil {
+				continue
+			}
+			if _, data, ok := strings.Cut(part.ImageURL.URL, ","); ok && strings.HasPrefix(part.ImageURL.URL, "data:") {
+				item.Images = append(item.Images, data)
+			}
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 type ollamaOptions struct {

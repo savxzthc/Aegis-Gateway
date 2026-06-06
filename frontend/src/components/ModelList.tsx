@@ -20,6 +20,7 @@ export default function ModelList(): JSX.Element {
   const [pulling, setPulling] = useState('');
   const [registering, setRegistering] = useState('');
   const [loadingMore, setLoadingMore] = useState(false);
+  const [showDiscovery, setShowDiscovery] = useState(false);
   const catalogCategoryRef = useRef(catalogCategory);
   const catalogCountRef = useRef(catalog.length);
 
@@ -162,9 +163,12 @@ export default function ModelList(): JSX.Element {
               </span>
             </div>
           </div>
-          <button className="command-button" type="button" onClick={() => void refresh()}>
-            <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
+          <button className="command-button" type="button" onClick={() => {
+            void loadLocalModels();
+            setShowDiscovery(true);
+          }}>
+            <HardDrive className="h-3.5 w-3.5" />
+            Discover
           </button>
         </div>
         <div className="grid gap-3 p-4 lg:grid-cols-2">
@@ -185,6 +189,34 @@ export default function ModelList(): JSX.Element {
           )}
         </div>
       </section>
+
+      {showDiscovery && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Discover Ollama models">
+          <section className="panel max-h-[80vh] w-full max-w-2xl overflow-hidden">
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <div className="text-xs font-bold text-primary">Ollama discovery</div>
+              <button className="command-button" type="button" onClick={() => setShowDiscovery(false)}>Close</button>
+            </div>
+            <div className="max-h-[65vh] divide-y divide-border overflow-y-auto">
+              {localModels.map((model) => (
+                <div key={model.id} className="flex items-center gap-3 px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs text-primary">{model.id}</div>
+                    <div className="text-[10px] text-muted">{model.size_gb.toFixed(1)} GB, est. {model.vram_gb.toFixed(1)} GB VRAM</div>
+                  </div>
+                  {model.registered || registered.has(model.id) ? (
+                    <span className="pill border-success text-success"><CheckCircle2 className="h-3 w-3" />Registered</span>
+                  ) : (
+                    <button className="command-button" type="button" disabled={registering === model.id} onClick={() => void addLocal(model)}>
+                      <Plus className="h-3.5 w-3.5" />Register
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
 
       <section className="panel overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">

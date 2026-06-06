@@ -11,6 +11,8 @@ export default function SettingsPanel(): JSX.Element {
   const [idleTimeout, setIdleTimeout] = useState(10);
   const [rateLimit, setRateLimit] = useState(60);
   const [ollamaURL, setOllamaURL] = useState('');
+  const [searchEnabled, setSearchEnabled] = useState(false);
+  const [searchProvider, setSearchProvider] = useState<'searxng' | 'duckduckgo'>('searxng');
 
   useEffect(() => {
     void loadConfig();
@@ -22,16 +24,27 @@ export default function SettingsPanel(): JSX.Element {
     setIdleTimeout(config.config.server.idle_timeout_minutes);
     setRateLimit(config.config.security.rate_limit_rpm);
     setOllamaURL(config.config.backend.ollama_base_url);
+    setSearchEnabled(config.config.search.enabled);
+    setSearchProvider(config.config.search.provider);
   }, [config]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!config) return;
+    try {
+      const parsed = new URL(ollamaURL);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error();
+    } catch {
+      toast.error('Ollama URL must be an absolute http or https URL');
+      return;
+    }
     await saveConfig({
       port,
       idle_timeout_minutes: idleTimeout,
       rate_limit_rpm: rateLimit,
       ollama_base_url: ollamaURL,
+      search_enabled: searchEnabled,
+      search_provider: searchProvider,
     });
     toast.success(
       port !== config.config.server.port ? 'Settings saved. Restart Aegis to use the new port.' : 'Settings saved',
@@ -108,6 +121,14 @@ export default function SettingsPanel(): JSX.Element {
               onChange={(event) => setOllamaURL(event.target.value)}
             />
           </div>
+          <label className="flex items-center gap-2 text-xs text-muted">
+            <input type="checkbox" checked={searchEnabled} onChange={(event) => setSearchEnabled(event.target.checked)} />
+            Enable web search grounding
+          </label>
+          <select className="field" value={searchProvider} onChange={(event) => setSearchProvider(event.target.value as 'searxng' | 'duckduckgo')}>
+            <option value="searxng">SearXNG</option>
+            <option value="duckduckgo">DuckDuckGo</option>
+          </select>
           <div className="md:col-span-2">
             <button className="command-button" type="submit">
               <Save className="h-3.5 w-3.5" />

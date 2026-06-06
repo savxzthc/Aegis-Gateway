@@ -96,4 +96,30 @@ button {
   .pill {
     @apply inline-flex items-center gap-1 border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider;
   }
+
+  .prose-aegis {
+    @apply whitespace-normal text-xs leading-6 text-primary;
+  }
+
+  .prose-aegis h1,
+  .prose-aegis h2,
+  .prose-aegis h3 {
+    @apply mb-2 mt-3 font-bold text-accent;
+  }
+
+  .prose-aegis pre {
+    @apply my-2 overflow-x-auto border border-border bg-base p-3;
+  }
+
+  .prose-aegis code {
+    @apply text-accent;
+  }
+
+  .prose-aegis ul {
+    @apply my-2 list-disc pl-5;
+  }
+
+  .prose-aegis ol {
+    @apply my-2 list-decimal pl-5;
+  }
 }

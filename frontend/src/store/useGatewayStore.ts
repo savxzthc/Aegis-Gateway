@@ -3,8 +3,11 @@ import {
   APIKey,
   CatalogCategory,
   CatalogModel,
+  Comparison,
   ConfigPatch,
   ConfigResponse,
+  Conversation,
+  ConversationSummary,
   CreateKeyResponse,
   GatewayAPIError,
   HardwareInfo,
@@ -16,10 +19,15 @@ import {
   StatsResponse,
   TemplatePayload,
   createKey,
+  createConversation as createConversationAPI,
   createTemplate,
   deleteTemplate,
+  deleteConversation as deleteConversationAPI,
   gatewayErrorMessage,
   getConfig,
+  getConversation,
+  getConversations,
+  getComparisons,
   getHardware,
   getLocalModels,
   getModelCatalog,
@@ -29,16 +37,20 @@ import {
   getStats,
   getTemplates,
   patchConfig,
+  patchConversation as patchConversationAPI,
   pullModel,
   registerInstalledModel,
   revokeKey,
   setAuthToken,
+  startComparison as startComparisonAPI,
   updateKeyModels,
   updateTemplate,
+  voteComparison as voteComparisonAPI,
 } from '../api/client';
 
-const storedToken = window.localStorage.getItem('aegis_api_key') ?? '';
+const storedToken = typeof window !== 'undefined' ? window.localStorage.getItem('aegis_api_key') ?? '' : '';
 setAuthToken(storedToken);
+const inFlight = new Map<string, Promise<void>>();
 
 interface GatewayState {
   token: string;
@@ -63,6 +75,11 @@ interface GatewayState {
   templates: PromptTemplate[];
   config: ConfigResponse | null;
   createdKey: CreateKeyResponse | null;
+  conversations: ConversationSummary[];
+  activeConversationId: string;
+  activeConversation: Conversation | null;
+  comparisons: Comparison[];
+  activeComparison: Comparison | null;
   setToken: (token: string) => void;
   clearToken: () => void;
   clearCreatedKey: () => void;
@@ -84,6 +101,14 @@ interface GatewayState {
   updatePromptTemplate: (id: string, payload: TemplatePayload) => Promise<void>;
   deletePromptTemplate: (id: string) => Promise<void>;
   saveConfig: (patch: ConfigPatch) => Promise<void>;
+  loadConversations: () => Promise<void>;
+  createConversation: (title?: string, model?: string) => Promise<ConversationSummary>;
+  loadConversation: (id: string) => Promise<Conversation>;
+  deleteConversation: (id: string) => Promise<void>;
+  patchConversation: (id: string, patch: { title?: string; model?: string }) => Promise<void>;
+  loadComparisons: () => Promise<void>;
+  startComparison: (prompt: string, modelA: string, modelB: string, isBlind: boolean) => Promise<void>;
+  voteComparison: (id: string, winner: 'a' | 'b' | 'tie') => Promise<void>;
 }
 
 export const useGatewayStore = create<GatewayState>((set, get) => ({
@@ -109,13 +134,18 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   templates: [],
   config: null,
   createdKey: null,
+  conversations: [],
+  activeConversationId: '',
+  activeConversation: null,
+  comparisons: [],
+  activeComparison: null,
   setToken: (token) => {
-    window.localStorage.setItem('aegis_api_key', token);
+    if (typeof window !== 'undefined') window.localStorage.setItem('aegis_api_key', token);
     setAuthToken(token);
     set({ token, error: '' });
   },
   clearToken: () => {
-    window.localStorage.removeItem('aegis_api_key');
+    if (typeof window !== 'undefined') window.localStorage.removeItem('aegis_api_key');
     setAuthToken('');
     set({ token: '', connected: false });
   },
@@ -127,10 +157,10 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     });
   },
   loadModels: async () => {
-    await guard(set, async () => {
-      const models = await getModels();
-      set({ models, connected: true });
-    });
+    await dedupe('models', async () => guard(set, async () => {
+        const models = await getModels();
+        set({ models, connected: true });
+      }));
   },
   loadModelCatalog: async (category, append = false, limit) => {
     await guard(set, async () => {
@@ -165,7 +195,7 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
       });
     } catch (error) {
       if (error instanceof GatewayAPIError && error.status === 401) {
-        window.localStorage.removeItem('aegis_api_key');
+        if (typeof window !== 'undefined') window.localStorage.removeItem('aegis_api_key');
         setAuthToken('');
         set({ token: '', connected: false, error: 'API key rejected. Sign in again.' });
       } else {
@@ -187,7 +217,7 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
       set({ localModels: res.data, localModelsReachable: res.reachable, models, connected: true });
     } catch (error) {
       if (error instanceof GatewayAPIError && error.status === 401) {
-        window.localStorage.removeItem('aegis_api_key');
+        if (typeof window !== 'undefined') window.localStorage.removeItem('aegis_api_key');
         setAuthToken('');
         set({ token: '', connected: false, error: 'API key rejected. Sign in again.' });
       } else {
@@ -274,6 +304,50 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
       set({ config, connected: true });
     });
   },
+  loadConversations: async () => {
+    await guard(set, async () => {
+      set({ conversations: await getConversations(), connected: true });
+    });
+  },
+  createConversation: async (title = '', model = '') => {
+    const item = await createConversationAPI(title, model);
+    set({ conversations: [item, ...get().conversations], activeConversationId: item.id });
+    return item;
+  },
+  loadConversation: async (id) => {
+    const item = await getConversation(id);
+    set({ activeConversationId: id, activeConversation: item });
+    return item;
+  },
+  deleteConversation: async (id) => {
+    await deleteConversationAPI(id);
+    set({
+      conversations: get().conversations.filter((item) => item.id !== id),
+      activeConversationId: get().activeConversationId === id ? '' : get().activeConversationId,
+      activeConversation: get().activeConversationId === id ? null : get().activeConversation,
+    });
+  },
+  patchConversation: async (id, patch) => {
+    const item = await patchConversationAPI(id, patch);
+    set({
+      conversations: get().conversations.map((conversation) => conversation.id === id ? item : conversation),
+      activeConversation: get().activeConversationId === id ? item : get().activeConversation,
+    });
+  },
+  loadComparisons: async () => {
+    await guard(set, async () => set({ comparisons: await getComparisons(), connected: true }));
+  },
+  startComparison: async (prompt, modelA, modelB, isBlind) => {
+    const item = await startComparisonAPI(prompt, modelA, modelB, isBlind);
+    set({ activeComparison: item, comparisons: [item, ...get().comparisons] });
+  },
+  voteComparison: async (id, winner) => {
+    const item = await voteComparisonAPI(id, winner);
+    set({
+      activeComparison: item,
+      comparisons: get().comparisons.map((comparison) => comparison.id === id ? item : comparison),
+    });
+  },
 }));
 
 async function guard(
@@ -285,13 +359,21 @@ async function guard(
     set({ error: '' });
   } catch (error) {
     if (error instanceof GatewayAPIError && error.status === 401) {
-      window.localStorage.removeItem('aegis_api_key');
+      if (typeof window !== 'undefined') window.localStorage.removeItem('aegis_api_key');
       setAuthToken('');
       set({ token: '', connected: false, error: 'API key rejected. Sign in again.' });
       return;
     }
-    set({ error: errorMessage(error), connected: false });
+    set({ error: errorMessage(error) });
   }
+}
+
+async function dedupe(key: string, fn: () => Promise<void>): Promise<void> {
+  const existing = inFlight.get(key);
+  if (existing) return existing;
+  const promise = fn().finally(() => inFlight.delete(key));
+  inFlight.set(key, promise);
+  return promise;
 }
 
 function errorMessage(error: unknown): string {

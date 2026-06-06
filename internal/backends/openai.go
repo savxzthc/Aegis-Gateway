@@ -52,7 +52,7 @@ func (b *OpenAIBackend) Ping(ctx context.Context) error {
 }
 
 func (b *OpenAIBackend) Chat(ctx context.Context, req *ChatRequest, stream bool) (*ChatResponse, error) {
-	body, err := json.Marshal(req)
+	body, err := json.Marshal(upstreamRequest(req))
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func (b *OpenAIBackend) Chat(ctx context.Context, req *ChatRequest, stream bool)
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage Usage `json:"usage"`
+		Usage Usage  `json:"usage"`
 		Model string `json:"model"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -104,7 +104,7 @@ func (b *OpenAIBackend) Chat(ctx context.Context, req *ChatRequest, stream bool)
 
 func (b *OpenAIBackend) StreamChat(ctx context.Context, req *ChatRequest, ch chan<- StreamChunk) error {
 	req.Stream = true
-	body, err := json.Marshal(req)
+	body, err := json.Marshal(upstreamRequest(req))
 	if err != nil {
 		return err
 	}
@@ -139,7 +139,9 @@ func (b *OpenAIBackend) StreamChat(ctx context.Context, req *ChatRequest, ch cha
 		}
 		var chunk struct {
 			Choices []struct {
-				Delta        struct{ Content string `json:"content"` } `json:"delta"`
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
 			Usage *Usage `json:"usage"`

@@ -6,6 +6,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0f0f0f">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/icon-192.svg">
 <title>Aegis Chat</title>
 <style>
 :root {
@@ -254,6 +256,9 @@ body {
 }
 #send-btn:hover { background: var(--accent-dk); }
 #send-btn:disabled { opacity: 0.5; pointer-events: none; }
+.icon-btn.active { color: #fff; background: var(--accent); }
+.bubble-footer { margin-top: 5px; color: var(--text-dim); font-size: 0.72rem; }
+.bubble-image { display: block; max-width: 100%; max-height: 260px; border-radius: 10px; margin-bottom: 8px; }
 </style>
 </head>
 <body>
@@ -272,6 +277,8 @@ body {
   <div id="header">
     <span class="header-title">⚡ Aegis</span>
     <select id="model-select"></select>
+    <button class="icon-btn" id="resume-btn" title="Resume conversation">â†º</button>
+    <button class="icon-btn" id="export-btn" title="Export conversation">â‡©</button>
     <button class="icon-btn" id="new-chat-btn" title="New chat">🗑</button>
     <button class="icon-btn" id="logout-btn" title="Logout">🔑</button>
   </div>
@@ -279,6 +286,9 @@ body {
     <div id="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
   </div>
   <div id="input-bar">
+    <input id="file-input" type="file" accept="image/*" capture="environment" hidden>
+    <button class="icon-btn" id="attach-btn" title="Attach image">+</button>
+    <button class="icon-btn" id="search-btn" title="Web search">âŒ•</button>
     <textarea id="msg-input" rows="1" placeholder="Message..."></textarea>
     <button id="send-btn" disabled>➤</button>
   </div>
@@ -289,6 +299,13 @@ let apiKey = '';
 let messages = [];
 let streaming = false;
 let abortCtrl = null;
+let conversationId = '';
+let searchEnabled = false;
+let pendingUpload = null;
+
+function trimMessages() {
+  if (messages.length > 100) messages = messages.slice(-100);
+}
 
 const authScreen = document.getElementById('auth-screen');
 const chatScreen = document.getElementById('chat-screen');
@@ -300,6 +317,15 @@ const messagesEl = document.getElementById('messages');
 const typingEl = document.getElementById('typing');
 const msgInput = document.getElementById('msg-input');
 const sendBtn = document.getElementById('send-btn');
+const fileInput = document.getElementById('file-input');
+const attachBtn = document.getElementById('attach-btn');
+const searchBtn = document.getElementById('search-btn');
+
+async function verifyKey(key) {
+  return fetch('/v1/models', {
+    headers: { 'Authorization': 'Bearer ' + key, 'X-Mobile': 'true' }
+  });
+}
 
 function showAuthScreen() {
   authScreen.classList.add('active');
@@ -318,9 +344,7 @@ function showChatScreen() {
 async function initChat(key) {
   apiKey = key;
   try {
-    const res = await fetch('/v1/models', {
-      headers: { 'Authorization': 'Bearer ' + key, 'X-Mobile': 'true' }
-    });
+    const res = await verifyKey(key);
     if (!res.ok) {
       if (res.status === 401) {
         localStorage.removeItem('aegis_api_key');
@@ -342,6 +366,11 @@ async function initChat(key) {
       modelSelect.appendChild(opt);
     });
     if (!modelSelect.value && models.length > 0) modelSelect.value = models[0].id;
+    const configRes = await fetch('/v1/config', { headers: { 'Authorization': 'Bearer ' + key } });
+    if (configRes.ok) {
+      const config = await configRes.json();
+      searchBtn.style.display = config.config?.search?.enabled ? '' : 'none';
+    }
     showChatScreen();
   } catch {
     authBtn.disabled = false;
@@ -357,9 +386,7 @@ authBtn.addEventListener('click', async () => {
   authBtn.textContent = 'Connecting…';
   authError.textContent = '';
   try {
-    const res = await fetch('/v1/models', {
-      headers: { 'Authorization': 'Bearer ' + key, 'X-Mobile': 'true' }
-    });
+    const res = await verifyKey(key);
     if (res.ok) {
       localStorage.setItem('aegis_api_key', key);
       await initChat(key);
@@ -385,7 +412,40 @@ modelSelect.addEventListener('change', () => {
 
 document.getElementById('new-chat-btn').addEventListener('click', () => {
   messages = [];
+  conversationId = '';
+  pendingUpload = null;
   renderMessages();
+});
+
+document.getElementById('resume-btn').addEventListener('click', async () => {
+  const res = await fetch('/v1/conversations?limit=10', { headers: { 'Authorization': 'Bearer ' + apiKey } });
+  if (!res.ok) return;
+  const items = (await res.json()).data || [];
+  if (!items.length) return alert('No saved conversations');
+  const choice = prompt(items.map((item, i) => `${i + 1}. ${item.title}`).join('\n') + '\n\nEnter a number:');
+  const selected = items[Number(choice) - 1];
+  if (!selected) return;
+  const detail = await fetch('/v1/conversations/' + encodeURIComponent(selected.id), { headers: { 'Authorization': 'Bearer ' + apiKey } });
+  if (!detail.ok) return;
+  const conversation = await detail.json();
+  conversationId = conversation.id;
+  modelSelect.value = conversation.model || modelSelect.value;
+  messages = (conversation.messages || []).map(m => ({ role: m.role, content: m.content, tps: m.tokens_per_second }));
+  renderMessages();
+});
+
+document.getElementById('export-btn').addEventListener('click', async () => {
+  if (!conversationId) return alert('Start or resume a saved conversation first');
+  const res = await fetch('/v1/conversations/' + encodeURIComponent(conversationId) + '/export?format=markdown', {
+    headers: { 'Authorization': 'Bearer ' + apiKey }
+  });
+  if (!res.ok) return alert('Export failed');
+  const blobURL = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = blobURL;
+  a.download = conversationId + '.md';
+  a.click();
+  URL.revokeObjectURL(blobURL);
 });
 
 document.getElementById('logout-btn').addEventListener('click', () => {
@@ -406,12 +466,12 @@ function renderMessages() {
     messagesEl.removeChild(messagesEl.firstChild);
   }
   messages.forEach(m => {
-    messagesEl.insertBefore(createBubble(m.role, m.content), typingEl);
+    messagesEl.insertBefore(createBubble(m.role, m.content, m.tps, m.image), typingEl);
   });
   scrollToBottom();
 }
 
-function createBubble(role, content) {
+function createBubble(role, content, tps, image) {
   const wrap = document.createElement('div');
   wrap.className = 'bubble-wrap ' + (role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : 'system');
   const bubble = document.createElement('div');
@@ -419,7 +479,19 @@ function createBubble(role, content) {
   const bc = document.createElement('span');
   bc.className = 'bubble-content';
   bc.textContent = content;
+  if (image) {
+    const img = document.createElement('img');
+    img.className = 'bubble-image';
+    img.src = image;
+    bubble.insertBefore(img, bc);
+  }
   bubble.appendChild(bc);
+  if (tps) {
+    const footer = document.createElement('div');
+    footer.className = 'bubble-footer';
+    footer.textContent = Number(tps).toFixed(1) + ' t/s';
+    bubble.appendChild(footer);
+  }
   wrap.appendChild(bubble);
   if (role === 'user' || role === 'assistant') {
     const copyBtn = document.createElement('button');
@@ -439,16 +511,29 @@ function createBubble(role, content) {
   return wrap;
 }
 
+document.addEventListener('touchstart', e => {
+  document.querySelectorAll('.bubble-wrap.copy-visible').forEach(el => {
+    if (!el.contains(e.target)) el.classList.remove('copy-visible');
+  });
+}, { passive: true });
+
 function setStreaming(val) {
   streaming = val;
   sendBtn.textContent = val ? '◼' : '➤';
-  sendBtn.disabled = !val && msgInput.value.trim() === '';
+  sendBtn.disabled = !val && msgInput.value.trim() === '' && !pendingUpload;
 }
 
 async function sendMessage() {
   const text = msgInput.value.trim();
-  if (!text || streaming) return;
-  messages.push({ role: 'user', content: text });
+  if ((!text && !pendingUpload) || streaming) return;
+  const image = pendingUpload?.preview || '';
+  const requestContent = pendingUpload
+    ? [{ type: 'image_url', image_url: { url: pendingUpload.url } }].concat(text ? [{ type: 'text', text }] : [])
+    : text;
+  messages.push({ role: 'user', content: text, image });
+  trimMessages();
+  pendingUpload = null;
+  attachBtn.classList.remove('active');
   msgInput.value = '';
   msgInput.style.height = 'auto';
   sendBtn.disabled = true;
@@ -468,8 +553,11 @@ async function sendMessage() {
       },
       body: JSON.stringify({
         model: modelSelect.value,
-        messages: messages,
-        stream: true
+        messages: messages.slice(-100).map(m => ({ role: m.role, content: m === messages[messages.length - 1] ? requestContent : m.content })),
+        stream: true,
+        conversation_id: conversationId || undefined,
+        persist: !conversationId,
+        search: searchEnabled
       }),
       signal: abortCtrl.signal
     });
@@ -495,9 +583,11 @@ async function sendMessage() {
     scrollToBottom();
 
     let assistantText = '';
+    if (!res.body) throw new Error('Streaming is unavailable in this browser');
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let tps = 0;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -512,6 +602,10 @@ async function sendMessage() {
           if (raw === '[DONE]') continue;
           try {
             const parsed = JSON.parse(raw);
+            if (parsed.type === 'meta') {
+              tps = parsed.tokens_per_second || 0;
+              continue;
+            }
             const delta = parsed.choices?.[0]?.delta?.content;
             if (delta) {
               assistantText += delta;
@@ -523,7 +617,15 @@ async function sendMessage() {
       }
     }
 
-    messages.push({ role: 'assistant', content: assistantText });
+    if (tps) {
+      const footer = document.createElement('div');
+      footer.className = 'bubble-footer';
+      footer.textContent = Number(tps).toFixed(1) + ' t/s';
+      assistantWrap.querySelector('.bubble').appendChild(footer);
+    }
+    conversationId = res.headers.get('X-Aegis-Conversation-ID') || conversationId;
+    messages.push({ role: 'assistant', content: assistantText, tps });
+    trimMessages();
   } catch (e) {
     typingEl.classList.remove('visible');
     if (e.name !== 'AbortError') {
@@ -554,14 +656,39 @@ msgInput.addEventListener('keydown', e => {
 msgInput.addEventListener('input', () => {
   msgInput.style.height = 'auto';
   msgInput.style.height = msgInput.scrollHeight + 'px';
-  sendBtn.disabled = msgInput.value.trim() === '' && !streaming;
+  sendBtn.disabled = msgInput.value.trim() === '' && !pendingUpload && !streaming;
 });
 
+searchBtn.addEventListener('click', () => {
+  searchEnabled = !searchEnabled;
+  searchBtn.classList.toggle('active', searchEnabled);
+});
+
+attachBtn.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', async () => {
+  const file = fileInput.files?.[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch('/v1/uploads', { method: 'POST', headers: { 'Authorization': 'Bearer ' + apiKey }, body: form });
+  if (!res.ok) return alert('Upload failed');
+  const uploaded = await res.json();
+  pendingUpload = { url: uploaded.url, preview: URL.createObjectURL(file) };
+  attachBtn.classList.add('active');
+  setStreaming(false);
+});
+
+// The key is kept in localStorage for installable mobile convenience. Any
+// same-origin script could read it, so Aegis serves this page with a strict CSP.
 const saved = localStorage.getItem('aegis_api_key');
 if (saved) {
   initChat(saved);
 } else {
   showAuthScreen();
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
 </script>
 </body>

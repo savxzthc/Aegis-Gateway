@@ -195,6 +195,24 @@ func TestMiddlewareIgnoresForwardedForWhenLoggingFailures(t *testing.T) {
 	}
 }
 
+func TestMiddlewareTrustsForwardedForFromConfiguredProxy(t *testing.T) {
+	store := &authStoreStub{}
+	mw := NewMiddleware(store, NewRateLimiter(), func() int { return 60 }, func() []string {
+		return []string{"127.0.0.0/8"}
+	})
+	handler := mw.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not run")
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.7, 127.0.0.1")
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, req)
+	if res.Code != http.StatusUnauthorized || len(store.failuresSeen) != 1 || store.failuresSeen[0] != "203.0.113.7" {
+		t.Fatalf("forwarded IP not trusted: status=%d failures=%#v", res.Code, store.failuresSeen)
+	}
+}
+
 func TestMiddlewareRateLimitsAuthFailures(t *testing.T) {
 	store := &authStoreStub{secrets: []db.APIKeySecret{{
 		ID:   "key_1",

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/savxzthc/aegis-gateway/internal/auth"
 	"github.com/savxzthc/aegis-gateway/internal/backends"
 	"github.com/savxzthc/aegis-gateway/internal/config"
 	"github.com/savxzthc/aegis-gateway/internal/db"
@@ -38,6 +39,9 @@ func (s *Server) Stats(w http.ResponseWriter, r *http.Request) {
 
 // Logs handles GET /v1/logs.
 func (s *Server) Logs(w http.ResponseWriter, r *http.Request) {
+	if (auth.UserRoleFromContext(r.Context()) != "" || auth.KeyRoleFromContext(r.Context()) != "") && !requireRole(w, r, "admin") {
+		return
+	}
 	limit := parsePositiveInt(r.URL.Query().Get("limit"), 50)
 	offset := parsePositiveInt(r.URL.Query().Get("offset"), 0)
 	if limit > 200 {

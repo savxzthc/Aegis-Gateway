@@ -14,6 +14,26 @@ import (
 
 // HardwareStream handles GET /v1/hardware/stream — SSE stream of GPU state every 2s.
 func (s *Server) HardwareStream(w http.ResponseWriter, r *http.Request) {
+	streamKey := requestOwnerID(r)
+	s.HardwareStreamsMu.Lock()
+	if s.HardwareStreams == nil {
+		s.HardwareStreams = map[string]int{}
+	}
+	if s.HardwareStreams[streamKey] >= 5 {
+		s.HardwareStreamsMu.Unlock()
+		writeError(w, http.StatusTooManyRequests, "too many concurrent hardware streams", "HARDWARE_STREAM_LIMIT")
+		return
+	}
+	s.HardwareStreams[streamKey]++
+	s.HardwareStreamsMu.Unlock()
+	defer func() {
+		s.HardwareStreamsMu.Lock()
+		s.HardwareStreams[streamKey]--
+		if s.HardwareStreams[streamKey] <= 0 {
+			delete(s.HardwareStreams, streamKey)
+		}
+		s.HardwareStreamsMu.Unlock()
+	}()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported", "STREAMING_UNSUPPORTED")
@@ -171,11 +191,6 @@ func (s *Server) BatchCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type result struct {
-		idx  int
-		resp interface{}
-	}
-
 	results := make([]interface{}, len(req.Requests))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 4)
@@ -206,4 +221,3 @@ func (s *Server) BatchCompletions(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 	writeJSON(w, http.StatusOK, map[string]interface{}{"data": results})
 }
-

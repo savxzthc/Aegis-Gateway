@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os/exec"
 	"regexp"
@@ -63,6 +64,9 @@ type Manager struct {
 	pollInterval  time.Duration
 	pullsMu       sync.RWMutex
 	pulls         map[string]*PullJob
+	tagsMu        sync.Mutex
+	tagsCache     []ollamaTag
+	tagsExpires   time.Time
 }
 
 // NewManager creates a lifecycle manager.
@@ -391,9 +395,20 @@ func (m *Manager) updatePull(model, raw string) {
 func (m *Manager) load(ctx context.Context, model string) error {
 	loadCtx, cancel := context.WithTimeout(ctx, m.loadTimeout)
 	defer cancel()
-
-	if err := m.warmModel(loadCtx, model); err == nil {
+	// The first warm attempt is deliberately short so an unreachable Ollama
+	// endpoint fails before the longer CLI fallback/load timeout is engaged.
+	probeCtx, probeCancel := context.WithTimeout(loadCtx, 2*time.Second)
+	probeErr := m.warmModel(probeCtx, model)
+	probeCancel()
+	if probeErr == nil {
 		return nil
+	}
+	var networkErr net.Error
+	if errors.As(probeErr, &networkErr) {
+		return fmt.Errorf("ollama is unreachable: %w", probeErr)
+	}
+	if loadCtx.Err() != nil {
+		return loadCtx.Err()
 	}
 	if err := m.runOllama(loadCtx, model); err != nil {
 		return err
@@ -622,6 +637,14 @@ type ollamaTag struct {
 }
 
 func (m *Manager) ollamaTags(ctx context.Context) ([]ollamaTag, error) {
+	m.tagsMu.Lock()
+	if time.Now().Before(m.tagsExpires) {
+		cached := append([]ollamaTag(nil), m.tagsCache...)
+		m.tagsMu.Unlock()
+		return cached, nil
+	}
+	m.tagsMu.Unlock()
+
 	baseURL := m.cfg.Get().Backend.OllamaBaseURL
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/tags", nil)
 	if err != nil {
@@ -641,7 +664,11 @@ func (m *Manager) ollamaTags(ctx context.Context) ([]ollamaTag, error) {
 	if err := json.NewDecoder(res.Body).Decode(&tags); err != nil {
 		return nil, err
 	}
-	return tags.Models, nil
+	m.tagsMu.Lock()
+	m.tagsCache = append([]ollamaTag(nil), tags.Models...)
+	m.tagsExpires = time.Now().Add(30 * time.Second)
+	m.tagsMu.Unlock()
+	return append([]ollamaTag(nil), tags.Models...), nil
 }
 
 func drainAndClose(body io.ReadCloser) {

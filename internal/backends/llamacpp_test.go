@@ -48,7 +48,7 @@ func TestLlamaCppBackendChatTranslatesRequest(t *testing.T) {
 	if got.Model != "local" || got.Stream {
 		t.Fatalf("unexpected request basics: %#v", got)
 	}
-	if len(got.Messages) != 1 || got.Messages[0].Role != "system" || got.Messages[0].Content != "rules" {
+	if len(got.Messages) != 1 || got.Messages[0].Role != "system" || got.Messages[0].Content.String() != "rules" {
 		t.Fatalf("messages not normalized: %#v", got.Messages)
 	}
 	if got.MaxTokens == nil || *got.MaxTokens != 64 {

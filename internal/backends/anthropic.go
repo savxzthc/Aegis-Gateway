@@ -17,10 +17,10 @@ const defaultAnthropicMaxTokens = 4096
 
 // AnthropicBackend translates OpenAI requests to Anthropic's Messages API.
 type AnthropicBackend struct {
-	apiKey             string
-	baseURL            string
-	anthropicVersion   string
-	client             *http.Client
+	apiKey           string
+	baseURL          string
+	anthropicVersion string
+	client           *http.Client
 }
 
 // NewAnthropicBackend creates a backend targeting the Anthropic API.
@@ -193,20 +193,25 @@ func (b *AnthropicBackend) StreamChat(ctx context.Context, req *ChatRequest, ch 
 
 func (b *AnthropicBackend) toAnthropicRequest(req *ChatRequest) map[string]interface{} {
 	var systemParts []string
-	var messages []map[string]string
+	var messages []map[string]interface{}
 	for _, msg := range req.Messages {
 		role := msg.Role
-		content := msg.Content.String()
 		if role == "system" || role == "developer" {
-			systemParts = append(systemParts, content)
+			systemParts = append(systemParts, msg.Content.String())
 			continue
 		}
+		parts := anthropicContentParts(msg.Content)
 		if role == "assistant" {
 			role = "assistant"
 		} else {
 			role = "user"
 		}
-		messages = append(messages, map[string]string{"role": role, "content": content})
+		// Anthropic has no tool role in this request shape; preserve its meaning
+		// as an explicitly labelled user turn rather than silently collapsing it.
+		if msg.Role == "tool" {
+			parts = append([]map[string]interface{}{{"type": "text", "text": "[tool result]\n"}}, parts...)
+		}
+		messages = append(messages, map[string]interface{}{"role": role, "content": parts})
 	}
 
 	maxTokens := defaultAnthropicMaxTokens
@@ -233,6 +238,39 @@ func (b *AnthropicBackend) toAnthropicRequest(req *ChatRequest) map[string]inter
 		result["stop_sequences"] = stopSeqs
 	}
 	return result
+}
+
+func anthropicContentParts(content MessageContent) []map[string]interface{} {
+	parts := make([]map[string]interface{}, 0, len(content.Parts()))
+	for _, part := range content.Parts() {
+		switch part.Type {
+		case "text":
+			if part.Text != "" {
+				parts = append(parts, map[string]interface{}{"type": "text", "text": part.Text})
+			}
+		case "image_url":
+			if part.ImageURL == nil || !strings.HasPrefix(part.ImageURL.URL, "data:") {
+				continue
+			}
+			header, data, ok := strings.Cut(strings.TrimPrefix(part.ImageURL.URL, "data:"), ",")
+			if !ok {
+				continue
+			}
+			mediaType, encoding, _ := strings.Cut(header, ";")
+			if encoding != "base64" {
+				continue
+			}
+			parts = append(parts, map[string]interface{}{
+				"type": "image",
+				"source": map[string]string{
+					"type":       "base64",
+					"media_type": mediaType,
+					"data":       data,
+				},
+			})
+		}
+	}
+	return parts
 }
 
 func (b *AnthropicBackend) setHeaders(req *http.Request) {

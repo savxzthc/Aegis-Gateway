@@ -11,7 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
+	urlpkg "net/url"
 	"os"
 	"os/signal"
 	"runtime"
@@ -30,6 +30,7 @@ import (
 	"github.com/savxzthc/aegis-gateway/internal/lifecycle"
 	"github.com/savxzthc/aegis-gateway/internal/metrics"
 	modelrouter "github.com/savxzthc/aegis-gateway/internal/router"
+	"github.com/savxzthc/aegis-gateway/internal/uploads"
 )
 
 //go:embed frontend/dist
@@ -64,11 +65,31 @@ func main() {
 	}
 	defer store.Close()
 
+	// Startup DB maintenance is local I/O; ten seconds tolerates slow disks
+	// without allowing startup to hang indefinitely.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := store.PruneOldMetadata(ctx, time.Now().UTC()); err != nil {
 		log.Fatalf("metadata retention: %v", err)
 	}
+	maintenanceCtx, stopMaintenance := context.WithCancel(context.Background())
+	defer stopMaintenance()
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-maintenanceCtx.Done():
+				return
+			case now := <-ticker.C:
+				pruneCtx, pruneCancel := context.WithTimeout(maintenanceCtx, 10*time.Second)
+				if err := store.PruneOldMetadata(pruneCtx, now.UTC()); err != nil {
+					log.Printf("aegis: metadata retention prune failed: %v", err)
+				}
+				pruneCancel()
+			}
+		}
+	}()
 	if *resetAdmin || *resetAdminKey {
 		raw, err := resetAdminAPIKey(ctx, store)
 		if err != nil {
@@ -103,6 +124,8 @@ func main() {
 	lifecycleManager := lifecycle.NewManager(cfg)
 	ollamaService := lifecycle.NewOllamaService(cfg.Get().Backend.OllamaBaseURL)
 	if usesOllamaBackend(cfg.Get()) {
+		// Local Ollama normally starts in seconds; twelve seconds also covers
+		// slower Windows process startup and antivirus scanning.
 		ollamaCtx, ollamaCancel := context.WithTimeout(context.Background(), 12*time.Second)
 		if err := ollamaService.Ensure(ollamaCtx); err != nil {
 			listenInfo.Warnings = append(listenInfo.Warnings, fmt.Sprintf("Ollama could not be started automatically: %v", err))
@@ -141,12 +164,19 @@ func main() {
 		BuildTime:        buildTime,
 		GoVersion:        runtime.Version(),
 	}
+	uploadStore, err := uploads.NewStore(cfg.Get().Server.UploadsDir)
+	if err != nil {
+		log.Fatalf("uploads: %v", err)
+	}
+	app.Uploads = uploadStore
 	listenInfo.Warnings = append(listenInfo.Warnings, backendReachabilityWarnings(app)...)
 	shutdownStreams := make(chan struct{})
 	app.Shutdown = shutdownStreams
 
 	rateLimiter := auth.NewRateLimiter()
-	authMiddleware := auth.NewMiddleware(store, rateLimiter, cfg.RateLimitRPM)
+	authMiddleware := auth.NewMiddleware(store, rateLimiter, cfg.RateLimitRPM, func() []string {
+		return cfg.Get().Server.TrustedProxies
+	})
 	apiHandler := api.NewRouter(app, authMiddleware.Handler)
 	handler, err := rootHandler(apiHandler, store)
 	if err != nil {
@@ -210,16 +240,19 @@ func main() {
 		}
 	}
 
+	// Give active HTTP handlers time to flush normal responses.
 	serverShutdownCtx, serverShutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer serverShutdownCancel()
 	if err := server.Shutdown(serverShutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+	// Model unload can involve a child process and GPU cleanup.
 	modelShutdownCtx, modelShutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer modelShutdownCancel()
 	if err := lifecycleManager.Shutdown(modelShutdownCtx); err != nil {
 		log.Printf("model shutdown: %v", err)
 	}
+	// The owned Ollama service is force-killed if it does not exit promptly.
 	ollamaShutdownCtx, ollamaShutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer ollamaShutdownCancel()
 	if err := ollamaService.Shutdown(ollamaShutdownCtx); err != nil {
@@ -320,7 +353,7 @@ func normalizeOllamaHost(value string) (string, error) {
 	if !strings.Contains(raw, "://") {
 		raw = "http://" + raw
 	}
-	parsed, err := url.Parse(raw)
+	parsed, err := urlpkg.Parse(raw)
 	if err != nil {
 		return "", err
 	}
@@ -350,7 +383,7 @@ func normalizeOllamaHost(value string) (string, error) {
 }
 
 func serverSharesOllamaPort(serverHost string, serverPort int, baseURL string) bool {
-	parsed, err := url.Parse(baseURL)
+	parsed, err := urlpkg.Parse(baseURL)
 	if err != nil || parsed.Port() == "" {
 		return false
 	}
@@ -387,6 +420,7 @@ func isLoopbackHost(host string) bool {
 }
 
 func isOllamaRoot(baseURL string) bool {
+	// Port conflict detection must stay fast and only targets the local host.
 	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/", nil)
@@ -556,6 +590,7 @@ func rootHandler(apiHandler http.Handler, store readinessStore) (http.Handler, e
 			writeRootJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed", "code": "METHOD_NOT_ALLOWED"})
 			return
 		}
+		// Readiness checks are local and should fail quickly for supervisors.
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := store.HealthCheck(ctx); err != nil {
@@ -585,7 +620,29 @@ func rootHandler(apiHandler http.Handler, store readinessStore) (http.Handler, e
 	mux.HandleFunc("/m", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/mobile", http.StatusFound)
 	})
+	manifestHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/manifest+json")
+		w.Header().Set("Cache-Control", "no-cache")
+		_, _ = w.Write([]byte(`{"name":"Aegis Chat","short_name":"Aegis","start_url":"/mobile","display":"standalone","background_color":"#0f0f0f","theme_color":"#7c3aed","icons":[{"src":"/icons/icon-192.svg","sizes":"192x192","type":"image/svg+xml"},{"src":"/icons/icon-512.svg","sizes":"512x512","type":"image/svg+xml"}]}`))
+	}
+	mux.HandleFunc("/manifest.webmanifest", manifestHandler)
+	mux.HandleFunc("/manifest.json", manifestHandler)
+	mux.HandleFunc("/icons/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/icons/icon-192.svg" && r.URL.Path != "/icons/icon-512.svg" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		_, _ = w.Write([]byte(aegisIconSVG))
+	})
+	mux.HandleFunc("/sw.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		_, _ = w.Write([]byte(aegisServiceWorker))
+	})
 	mux.Handle("/v1/", apiHandler)
+	mux.Handle("/auth/", apiHandler)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/") {
 			apiHandler.ServeHTTP(w, r)
@@ -676,11 +733,18 @@ func printBanner(url string, cfg config.Config, warnings []string, activeKeyCoun
 	fmt.Println()
 	fmt.Println("Aegis Gateway")
 	fmt.Println("privacy-first local AI gateway")
+	fmt.Printf("dashboard: %s\n", url)
+	fmt.Printf("mobile:    %s/mobile\n", url)
+	if bindsAllInterfaces(cfg.Server.Host) {
+		if lanIP := firstLANIP(); lanIP != "" {
+			if parsed, err := urlpkg.Parse(url); err == nil {
+				fmt.Printf("LAN:       http://%s\n", net.JoinHostPort(lanIP, parsed.Port()))
+			}
+		}
+	}
 	for _, warning := range warnings {
 		fmt.Printf("warning: %s\n", warning)
 	}
-	fmt.Printf("dashboard: %s\n", url)
-	fmt.Printf("mobile:    %s/mobile\n", url)
 	fmt.Printf("version: %s\n", version)
 	fmt.Printf("build time: %s\n", buildTime)
 	fmt.Printf("active API keys: %d\n", activeKeyCount)
@@ -692,6 +756,30 @@ func printBanner(url string, cfg config.Config, warnings []string, activeKeyCoun
 	fmt.Printf("llama.cpp backend: %s\n", cfg.Backend.LlamaCppBaseURL)
 	fmt.Println()
 }
+
+func firstLANIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, addr := range addrs {
+		var ip net.IP
+		switch value := addr.(type) {
+		case *net.IPNet:
+			ip = value.IP
+		case *net.IPAddr:
+			ip = value.IP
+		}
+		if ip != nil && ip.To4() != nil && !ip.IsLoopback() && ip.IsPrivate() {
+			return ip.String()
+		}
+	}
+	return ""
+}
+
+const aegisIconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="96" fill="#0f0f0f"/><path d="M256 52 420 116v116c0 105-65 190-164 228C157 422 92 337 92 232V116z" fill="#7c3aed"/><path d="m286 118-112 162h70l-18 114 112-174h-72z" fill="#fff"/></svg>`
+
+const aegisServiceWorker = `const CACHE='aegis-mobile-v1';const SHELL=['/mobile','/manifest.webmanifest','/sw.js','/icons/icon-192.svg','/icons/icon-512.svg'];self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL))));self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));self.addEventListener('fetch',e=>{const u=new URL(e.request.url);if(u.origin!==location.origin||u.pathname.startsWith('/v1/')||u.pathname.startsWith('/auth/'))return;if(SHELL.includes(u.pathname)){e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request)));}});`
 
 func backendReachabilityWarnings(server *api.Server) []string {
 	cfg := server.Config.Get()

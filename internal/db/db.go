@@ -46,9 +46,12 @@ func (s *Store) Close() error {
 
 // Migrate applies the database schema.
 func (s *Store) Migrate(ctx context.Context) error {
+	// Base statements are intentionally idempotent; versioned migrations below
+	// carry every schema change needed by existing databases.
 	base := []string{
 		`PRAGMA journal_mode = WAL;`,
 		`PRAGMA busy_timeout = 5000;`,
+		`PRAGMA foreign_keys = ON;`,
 		`CREATE TABLE IF NOT EXISTS api_keys (
 			id TEXT PRIMARY KEY,
 			label TEXT NOT NULL,
@@ -141,6 +144,45 @@ func (s *Store) runVersionedMigrations(ctx context.Context) error {
 		{3, `ALTER TABLE api_keys ADD COLUMN rate_limit_rpm INTEGER NOT NULL DEFAULT 0`},
 		{4, `ALTER TABLE api_keys ADD COLUMN max_prompt_tokens INTEGER NOT NULL DEFAULT 0`},
 		{5, `ALTER TABLE api_keys ADD COLUMN allowed_ips TEXT`},
+		{6, `
+			CREATE TABLE chat_conversations (
+				id TEXT PRIMARY KEY,
+				owner_id TEXT NOT NULL,
+				title TEXT NOT NULL,
+				model TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+			CREATE TABLE chat_messages (
+				id TEXT PRIMARY KEY,
+				conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+				role TEXT NOT NULL,
+				content TEXT NOT NULL,
+				model_used TEXT NOT NULL,
+				tokens_per_second REAL NOT NULL DEFAULT 0,
+				created_at TEXT NOT NULL
+			);
+			CREATE INDEX idx_chat_conversations_owner_updated ON chat_conversations(owner_id, updated_at);
+			CREATE INDEX idx_chat_messages_conversation_created ON chat_messages(conversation_id, created_at);
+		`},
+		{7, `
+			CREATE TABLE comparisons (
+				id TEXT PRIMARY KEY,
+				owner_id TEXT NOT NULL,
+				prompt TEXT NOT NULL,
+				model_a TEXT NOT NULL,
+				model_b TEXT NOT NULL,
+				response_a TEXT NOT NULL DEFAULT '',
+				response_b TEXT NOT NULL DEFAULT '',
+				winner TEXT,
+				is_blind INTEGER NOT NULL DEFAULT 1,
+				blind_map TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				completed_at TEXT
+			);
+			CREATE INDEX idx_comparisons_owner_created ON comparisons(owner_id, created_at);
+		`},
+		{8, `ALTER TABLE request_logs ADD COLUMN tokens_per_second REAL NOT NULL DEFAULT 0`},
 	}
 	for _, m := range migrations {
 		var count int

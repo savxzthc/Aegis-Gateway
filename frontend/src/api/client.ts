@@ -15,10 +15,12 @@ export interface ModelInfo {
   created: number;
   owned_by: string;
   vram_gb: number;
-  backend: 'ollama' | 'llamacpp';
+  backend: BackendType;
   description: string;
   status: 'unloaded' | 'loading' | 'loaded' | 'idle';
 }
+
+export type BackendType = 'ollama' | 'llamacpp' | 'openai' | 'openrouter' | 'anthropic';
 
 export interface ModelListResponse {
   object: 'list';
@@ -109,6 +111,7 @@ export interface RequestLog {
   estimated_prompt_tokens: number;
   estimated_completion_tokens: number;
   status_code: number;
+  tokens_per_second: number;
 }
 
 export interface LogsResponse {
@@ -161,7 +164,7 @@ export interface TemplatePayload {
 
 export interface ModelRegistryEntry {
   vram_gb: number;
-  backend: 'ollama' | 'llamacpp';
+  backend: BackendType;
   description: string;
   system_prompt: string;
 }
@@ -173,6 +176,12 @@ export interface GatewayConfig {
     idle_timeout_minutes: number;
     request_timeout_seconds: number;
     system_prompt: string;
+    secure_cookies: boolean;
+    session_ttl_days: number;
+    trusted_proxies: string[];
+    uploads_dir: string;
+    max_upload_bytes: number;
+    vision_model_patterns: string[];
   };
   security: {
     rate_limit_rpm: number;
@@ -185,6 +194,13 @@ export interface GatewayConfig {
   };
   models: {
     registry: Record<string, ModelRegistryEntry>;
+  };
+  search: {
+    enabled: boolean;
+    provider: 'searxng' | 'duckduckgo';
+    searxng_base_url: string;
+    max_results: number;
+    timeout_seconds: number;
   };
 }
 
@@ -206,19 +222,33 @@ export interface ConfigPatch {
   idle_timeout_minutes?: number;
   rate_limit_rpm?: number;
   ollama_base_url?: string;
+  search_enabled?: boolean;
+  search_provider?: 'searxng' | 'duckduckgo';
+  secure_cookies?: boolean;
+  session_ttl_days?: number;
 }
 
-export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
+export type ChatRole = 'system' | 'developer' | 'user' | 'assistant' | 'tool';
+
+export type ChatContent =
+  | string
+  | Array<
+      | { type: 'text'; text: string }
+      | { type: 'image_url'; image_url: { url: string } }
+    >;
 
 export interface ChatMessage {
   role: ChatRole;
-  content: string;
+  content: ChatContent;
 }
 
 export interface ChatCompletionRequest {
   model: string;
   messages: ChatMessage[];
   stream: false;
+  conversation_id?: string;
+  persist?: boolean;
+  search?: boolean;
 }
 
 export interface ChatCompletionResponse {
@@ -244,6 +274,50 @@ export interface ChatResult {
   routedModel: string;
   fallback: boolean;
   usage: ChatCompletionResponse['usage'];
+  tokensPerSecond: number;
+  conversationId?: string;
+  searchUsed: boolean;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  model: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationMessage {
+  id: string;
+  role: ChatRole;
+  content: string;
+  model_used?: string;
+  tokens_per_second?: number;
+  created_at: string;
+}
+
+export interface Conversation extends ConversationSummary {
+  messages: ConversationMessage[];
+}
+
+export interface Comparison {
+  id: string;
+  prompt: string;
+  model_a: string;
+  model_b: string;
+  response_a: string;
+  response_b: string;
+  winner: 'a' | 'b' | 'tie' | null;
+  is_blind: boolean;
+  created_at: string;
+  completed_at?: string;
+}
+
+export interface UploadResult {
+  id: string;
+  content_type: string;
+  size: number;
+  url: string;
 }
 
 export interface ChatCompletionChunk {
@@ -466,19 +540,91 @@ export async function patchConfig(patch: ConfigPatch): Promise<ConfigResponse> {
   return res.data;
 }
 
-export async function sendChatCompletion(model: string, messages: ChatMessage[]): Promise<ChatResult> {
+export async function getConversations(): Promise<ConversationSummary[]> {
+  const res = await client.get<{ data: ConversationSummary[] }>('/conversations', { timeout: 30000 });
+  return arrayOrEmpty(res.data.data);
+}
+
+export async function createConversation(title = '', model = ''): Promise<ConversationSummary> {
+  const res = await client.post<ConversationSummary>('/conversations', { title, model }, { timeout: 30000 });
+  return res.data;
+}
+
+export async function getConversation(id: string): Promise<Conversation> {
+  const res = await client.get<Conversation>(`/conversations/${encodeURIComponent(id)}`, { timeout: 30000 });
+  return { ...res.data, messages: arrayOrEmpty(res.data.messages) };
+}
+
+export async function patchConversation(id: string, patch: { title?: string; model?: string }): Promise<Conversation> {
+  const res = await client.patch<Conversation>(`/conversations/${encodeURIComponent(id)}`, patch, { timeout: 30000 });
+  return { ...res.data, messages: arrayOrEmpty(res.data.messages) };
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  await client.delete(`/conversations/${encodeURIComponent(id)}`, { timeout: 30000 });
+}
+
+export async function exportConversation(id: string, format: 'markdown' | 'json'): Promise<void> {
+  const response = await fetch(`/v1/conversations/${encodeURIComponent(id)}/export?format=${format}`, {
+    headers: currentAuthToken ? { Authorization: `Bearer ${currentAuthToken}` } : undefined,
+  });
+  if (!response.ok) throw await readAPIError(response);
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${id}.${format === 'markdown' ? 'md' : 'json'}`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function uploadFile(file: File): Promise<UploadResult> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await client.post<UploadResult>('/uploads', form, { timeout: 120000 });
+  return res.data;
+}
+
+export async function startComparison(prompt: string, modelA: string, modelB: string, isBlind: boolean): Promise<Comparison> {
+  const res = await client.post<Comparison>('/compare/start', { prompt, model_a: modelA, model_b: modelB, is_blind: isBlind }, { timeout: 0 });
+  return res.data;
+}
+
+export async function getComparisons(): Promise<Comparison[]> {
+  const res = await client.get<{ data: Comparison[] }>('/compare', { timeout: 30000 });
+  return arrayOrEmpty(res.data.data);
+}
+
+export async function voteComparison(id: string, winner: 'a' | 'b' | 'tie'): Promise<Comparison> {
+  const res = await client.post<Comparison>(`/compare/${encodeURIComponent(id)}/vote`, { winner }, { timeout: 30000 });
+  return res.data;
+}
+
+export interface ChatOptions {
+  conversationId?: string;
+  persist?: boolean;
+  search?: boolean;
+}
+
+export async function sendChatCompletion(model: string, messages: ChatMessage[], options: ChatOptions = {}): Promise<ChatResult> {
   const body: ChatCompletionRequest = {
     model,
     messages,
     stream: false,
+    conversation_id: options.conversationId,
+    persist: options.persist,
+    search: options.search,
   };
   const res = await client.post<ChatCompletionResponse>('/chat/completions', body, { timeout: 180000 });
   return {
-    content: res.data.choices[0]?.message.content ?? '',
+    content: contentText(res.data.choices[0]?.message.content ?? ''),
     model: res.data.model,
     routedModel: String(res.headers['x-aegis-routed-model'] ?? res.data.model),
     fallback: String(res.headers['x-aegis-fallback'] ?? 'false') === 'true',
     usage: res.data.usage,
+    tokensPerSecond: Number(res.headers['x-aegis-tps'] ?? 0),
+    conversationId: String(res.headers['x-aegis-conversation-id'] ?? '') || undefined,
+    searchUsed: String(res.headers['x-aegis-search-used'] ?? 'false') === 'true',
   };
 }
 
@@ -487,7 +633,9 @@ export async function streamChatCompletion(
   messages: ChatMessage[],
   onToken: (token: string) => void,
   signal?: AbortSignal,
+  options: ChatOptions = {},
 ): Promise<ChatResult> {
+  // fetch is used here because browser Axios does not expose a streaming body.
   const response = await fetch('/v1/chat/completions', {
     method: 'POST',
     signal,
@@ -500,6 +648,9 @@ export async function streamChatCompletion(
       messages,
       stream: true,
       stream_options: { include_usage: true },
+      conversation_id: options.conversationId,
+      persist: options.persist,
+      search: options.search,
     }),
   });
 
@@ -516,6 +667,7 @@ export async function streamChatCompletion(
   let content = '';
   const promptTokens = estimateMessages(messages);
   let usage: ChatCompletionResponse['usage'] | null = null;
+  let tokensPerSecond = 0;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -534,11 +686,15 @@ export async function streamChatCompletion(
       if (!data || data === '[DONE]') {
         continue;
       }
-      const chunk = JSON.parse(data) as ChatCompletionChunk | APIErrorResponse;
+      const chunk = JSON.parse(data) as ChatCompletionChunk | APIErrorResponse | { type: 'meta'; tokens_per_second: number };
       if ('error' in chunk) {
         throw new GatewayAPIError(chunk.error, 0, chunk.code || 'BACKEND_STREAM_ERROR');
       }
-      const token = chunk.choices[0]?.delta.content ?? '';
+      if ('tokens_per_second' in chunk) {
+        tokensPerSecond = chunk.tokens_per_second;
+        continue;
+      }
+      const token = contentText(chunk.choices[0]?.delta.content ?? '');
       if (token) {
         content += token;
         onToken(token);
@@ -560,11 +716,20 @@ export async function streamChatCompletion(
       completion_tokens: estimatedCompletion,
       total_tokens: promptTokens + estimatedCompletion,
     },
+    tokensPerSecond,
+    conversationId: response.headers.get('X-Aegis-Conversation-ID') ?? undefined,
+    searchUsed: response.headers.get('X-Aegis-Search-Used') === 'true',
   };
 }
 
 function estimateMessages(messages: ChatMessage[]): number {
-  return messages.reduce((total, message) => total + estimateText(message.role) + estimateText(message.content), 0);
+  // Client-side approximation used only for pre-flight/fallback display.
+  return messages.reduce((total, message) => total + estimateText(message.role) + estimateText(contentText(message.content)), 0);
+}
+
+export function contentText(content: ChatContent): string {
+  if (typeof content === 'string') return content;
+  return content.filter((part) => part.type === 'text').map((part) => (part.type === 'text' ? part.text : '')).join('\n');
 }
 
 function estimateText(value: string): number {

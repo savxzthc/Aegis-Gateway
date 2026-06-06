@@ -9,7 +9,6 @@ import (
 	"github.com/savxzthc/aegis-gateway/internal/db"
 )
 
-const sessionTTL = 7 * 24 * time.Hour
 const sessionCookieName = "aegis_session"
 
 // Login handles POST /auth/login.
@@ -57,6 +56,8 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
+	serverCfg := s.Config.Get().Server
+	sessionTTL := time.Duration(serverCfg.SessionTTLDays) * 24 * time.Hour
 	if err := s.DB.CreateSession(r.Context(), db.Session{
 		Token:     token,
 		UserID:    user.ID,
@@ -73,6 +74,7 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   serverCfg.SecureCookies,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
@@ -94,6 +96,8 @@ func (s *Server) Logout(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   s.Config.Get().Server.SecureCookies,
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
 	w.WriteHeader(http.StatusNoContent)
